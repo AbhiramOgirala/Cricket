@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  SafeAreaView, ActivityIndicator
+  ActivityIndicator
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -48,23 +49,14 @@ export default function HistoryScreen() {
             <MaterialCommunityIcons name="cricket" size={60} color={COLORS.text_muted} />
             <Text style={styles.emptyText}>No matches yet</Text>
             <Text style={styles.emptySubtext}>Start a new match to see history here</Text>
-            <TouchableOpacity
-              onPress={() => router.replace('/')}
-              style={styles.startBtn}
-            >
-              <LinearGradient
-                colors={[COLORS.primary, COLORS.primary_dim]}
-                style={styles.startBtnGrad}
-              >
+            <TouchableOpacity onPress={() => router.replace('/')} style={styles.startBtn}>
+              <LinearGradient colors={[COLORS.primary, COLORS.primary_dim]} style={styles.startBtnGrad}>
                 <Text style={styles.startBtnText}>Start First Match</Text>
               </LinearGradient>
             </TouchableOpacity>
           </View>
         ) : (
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.scrollContent}
-          >
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
             {matches.map((match, i) => (
               <View key={match.matchId || i} style={styles.matchCard}>
                 <View style={styles.matchCardHeader}>
@@ -95,45 +87,23 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg_deep },
   container: { flex: 1 },
   topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 12,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12,
   },
   backBtn: { padding: 8 },
   screenTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text_primary },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 30,
-    gap: 12,
-  },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 30, gap: 12 },
   emptyText: { fontSize: 20, fontWeight: '800', color: COLORS.text_primary, marginTop: 10 },
   emptySubtext: { fontSize: 14, color: COLORS.text_secondary, textAlign: 'center' },
   startBtn: { marginTop: 10 },
-  startBtnGrad: {
-    paddingHorizontal: 28,
-    paddingVertical: 14,
-    borderRadius: 12,
-  },
+  startBtnGrad: { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 12 },
   startBtnText: { fontSize: 16, fontWeight: '800', color: '#000' },
   scrollContent: { padding: 16, gap: 12 },
   matchCard: {
-    backgroundColor: COLORS.bg_card,
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    gap: 8,
+    backgroundColor: COLORS.bg_card, borderRadius: 14, padding: 16,
+    borderWidth: 1, borderColor: COLORS.border, gap: 8,
   },
-  matchCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
+  matchCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   matchCardName: { fontSize: 16, fontWeight: '800', color: COLORS.text_primary },
   matchCardDate: { fontSize: 11, color: COLORS.text_muted, fontWeight: '600' },
   matchCardResult: { fontSize: 14, fontWeight: '700', color: COLORS.primary },

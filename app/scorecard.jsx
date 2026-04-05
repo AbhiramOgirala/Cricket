@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
-  SafeAreaView, Dimensions
+  Dimensions
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useSelector } from 'react-redux';
@@ -26,15 +27,10 @@ function BatsmanRow({ player, stats, isStriker }) {
     <View style={styles.tableRow}>
       <View style={styles.tableNameCell}>
         <Text style={styles.tablePlayerName} numberOfLines={1}>
-          {player?.name || '—'}
-          {isStriker ? ' *' : ''}
+          {player?.name || '—'}{isStriker ? ' *' : ''}
         </Text>
-        {stats.isOut && (
-          <Text style={styles.dismissalText}>{stats.wicketType || 'Out'}</Text>
-        )}
-        {!stats.isOut && stats.balls > 0 && (
-          <Text style={styles.notOutText}>not out</Text>
-        )}
+        {stats.isOut && <Text style={styles.dismissalText}>{stats.wicketType || 'Out'}</Text>}
+        {!stats.isOut && stats.balls > 0 && <Text style={styles.notOutText}>not out</Text>}
       </View>
       <Text style={styles.tableCell}>{stats.runs}</Text>
       <Text style={styles.tableCell}>{stats.balls}</Text>
@@ -47,9 +43,7 @@ function BatsmanRow({ player, stats, isStriker }) {
 
 function BowlerRow({ player, stats }) {
   const overs = `${stats.overs}.${stats.balls}`;
-  const econ = stats.overs > 0
-    ? (stats.runs / (stats.overs + stats.balls / 6)).toFixed(1)
-    : '0.0';
+  const econ = stats.overs > 0 ? (stats.runs / (stats.overs + stats.balls / 6)).toFixed(1) : '0.0';
   return (
     <View style={styles.tableRow}>
       <Text style={[styles.tableNameCell, { fontSize: 13, color: COLORS.text_primary }]} numberOfLines={1}>
@@ -68,16 +62,10 @@ function InningsCard({ innings, teams, isCurrent }) {
   if (!innings) return null;
   const battingTeam = innings.battingTeamId === teams.team1.id ? teams.team1 : teams.team2;
   const bowlingTeam = innings.bowlingTeamId === teams.team1.id ? teams.team1 : teams.team2;
-
   const batsmenEntries = Object.entries(innings.batsmanStats || {});
   const bowlerEntries = Object.entries(innings.bowlerStats || {});
-
-  const totalExtras =
-    (innings.extras?.wides || 0) +
-    (innings.extras?.noBalls || 0) +
-    (innings.extras?.byes || 0) +
-    (innings.extras?.legByes || 0);
-
+  const totalExtras = (innings.extras?.wides || 0) + (innings.extras?.noBalls || 0) +
+    (innings.extras?.byes || 0) + (innings.extras?.legByes || 0);
   const oversStr = innings.overs.length + '.' + (innings.currentOver?.legalBalls || 0);
 
   return (
@@ -85,14 +73,11 @@ function InningsCard({ innings, teams, isCurrent }) {
       <View style={styles.inningsCardHeader}>
         <Text style={styles.inningsTeamName}>{battingTeam?.name}</Text>
         <View style={styles.inningsTotalWrap}>
-          <Text style={styles.inningsTotal}>
-            {innings.totalRuns}/{innings.totalWickets}
-          </Text>
+          <Text style={styles.inningsTotal}>{innings.totalRuns}/{innings.totalWickets}</Text>
           <Text style={styles.inningsOvers}>({oversStr} ov)</Text>
         </View>
       </View>
 
-      {/* Batting */}
       <SectionHeader title="BATTING" color={COLORS.primary} />
       <View style={styles.tableHeaderRow}>
         <Text style={[styles.tableHeaderCell, { flex: 2 }]}>Batsman</Text>
@@ -105,17 +90,9 @@ function InningsCard({ innings, teams, isCurrent }) {
       {batsmenEntries.map(([playerId, stats]) => {
         const player = [...(battingTeam?.players || [])].find((p) => p.id === playerId);
         const isStriker = innings.currentBatsmen?.striker?.id === playerId;
-        return (
-          <BatsmanRow
-            key={playerId}
-            player={player}
-            stats={stats}
-            isStriker={isStriker}
-          />
-        );
+        return <BatsmanRow key={playerId} player={player} stats={stats} isStriker={isStriker} />;
       })}
 
-      {/* Extras and Total */}
       <View style={styles.extrasRow}>
         <Text style={styles.extrasLabel}>Extras</Text>
         <Text style={styles.extrasValue}>
@@ -125,12 +102,9 @@ function InningsCard({ innings, teams, isCurrent }) {
       </View>
       <View style={styles.totalRow}>
         <Text style={styles.totalLabel}>Total</Text>
-        <Text style={styles.totalValue}>
-          {innings.totalRuns}/{innings.totalWickets} ({oversStr} Ov)
-        </Text>
+        <Text style={styles.totalValue}>{innings.totalRuns}/{innings.totalWickets} ({oversStr} Ov)</Text>
       </View>
 
-      {/* Fall of Wickets */}
       {innings.fallOfWickets?.length > 0 && (
         <>
           <SectionHeader title="FALL OF WICKETS" color={COLORS.danger} />
@@ -144,7 +118,6 @@ function InningsCard({ innings, teams, isCurrent }) {
         </>
       )}
 
-      {/* Bowling */}
       <SectionHeader title="BOWLING" color={COLORS.secondary} />
       <View style={styles.tableHeaderRow}>
         <Text style={[styles.tableHeaderCell, { flex: 2 }]}>Bowler</Text>
@@ -169,7 +142,6 @@ export default function ScorecardScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <LinearGradient colors={[COLORS.bg_deep, COLORS.bg_dark]} style={styles.container}>
-        {/* Top bar */}
         <View style={styles.topBar}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={24} color={COLORS.text_primary} />
@@ -178,24 +150,19 @@ export default function ScorecardScreen() {
           <View style={{ width: 40 }} />
         </View>
 
-        {/* Match title */}
         <Text style={styles.matchTitle}>{match.matchName}</Text>
 
-        {/* Inn tabs */}
         {match.innings.length > 1 && (
           <View style={styles.tabRow}>
             {match.innings.map((inn, i) => {
-              const team =
-                inn.battingTeamId === match.team1.id ? match.team1 : match.team2;
+              const team = inn.battingTeamId === match.team1.id ? match.team1 : match.team2;
               return (
                 <TouchableOpacity
                   key={i}
                   style={[styles.tab, activeTab === i && styles.tabActive]}
                   onPress={() => setActiveTab(i)}
                 >
-                  <Text
-                    style={[styles.tabText, activeTab === i && styles.tabTextActive]}
-                  >
+                  <Text style={[styles.tabText, activeTab === i && styles.tabTextActive]}>
                     {team?.name} ({i + 1}st Inn)
                   </Text>
                 </TouchableOpacity>
@@ -212,16 +179,9 @@ export default function ScorecardScreen() {
           />
         </ScrollView>
 
-        {/* Back to scoring */}
         {match.status !== 'complete' && (
-          <TouchableOpacity
-            style={styles.backToScoringBtn}
-            onPress={() => router.back()}
-          >
-            <LinearGradient
-              colors={[COLORS.primary, COLORS.primary_dim]}
-              style={styles.backToScoringGrad}
-            >
+          <TouchableOpacity style={styles.backToScoringBtn} onPress={() => router.back()}>
+            <LinearGradient colors={[COLORS.primary, COLORS.primary_dim]} style={styles.backToScoringGrad}>
               <Ionicons name="arrow-back" size={18} color="#000" />
               <Text style={styles.backToScoringText}>Back to Scoring</Text>
             </LinearGradient>
@@ -236,164 +196,65 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg_deep },
   container: { flex: 1 },
   topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 8,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8,
   },
   backBtn: { padding: 8 },
   screenTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text_primary },
-  matchTitle: {
-    fontSize: 14,
-    color: COLORS.text_secondary,
-    textAlign: 'center',
-    marginBottom: 12,
-    fontWeight: '600',
-  },
+  matchTitle: { fontSize: 14, color: COLORS.text_secondary, textAlign: 'center', marginBottom: 12, fontWeight: '600' },
   tabRow: {
-    flexDirection: 'row',
-    marginHorizontal: 16,
-    marginBottom: 12,
-    backgroundColor: COLORS.bg_card,
-    borderRadius: 12,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    flexDirection: 'row', marginHorizontal: 16, marginBottom: 12,
+    backgroundColor: COLORS.bg_card, borderRadius: 12, padding: 4,
+    borderWidth: 1, borderColor: COLORS.border,
   },
-  tab: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 9,
-    alignItems: 'center',
-  },
+  tab: { flex: 1, paddingVertical: 8, borderRadius: 9, alignItems: 'center' },
   tabActive: { backgroundColor: COLORS.primary },
   tabText: { fontSize: 12, fontWeight: '700', color: COLORS.text_muted },
   tabTextActive: { color: '#000' },
   scrollContent: { paddingHorizontal: 16, paddingBottom: 20 },
   inningsCard: {
-    backgroundColor: COLORS.bg_card,
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    marginBottom: 16,
+    backgroundColor: COLORS.bg_card, borderRadius: 16, padding: 14,
+    borderWidth: 1, borderColor: COLORS.border, marginBottom: 16,
   },
   inningsCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: 14, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
   inningsTeamName: { fontSize: 18, fontWeight: '800', color: COLORS.text_primary },
   inningsTotalWrap: { alignItems: 'flex-end' },
   inningsTotal: { fontSize: 24, fontWeight: '900', color: COLORS.primary },
   inningsOvers: { fontSize: 12, color: COLORS.text_muted, fontWeight: '600' },
-  sectionHeader: {
-    borderLeftWidth: 3,
-    paddingLeft: 10,
-    marginTop: 14,
-    marginBottom: 8,
-  },
-  sectionHeaderText: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-  },
+  sectionHeader: { borderLeftWidth: 3, paddingLeft: 10, marginTop: 14, marginBottom: 8 },
+  sectionHeaderText: { fontSize: 11, fontWeight: '800', letterSpacing: 1.5 },
   tableHeaderRow: {
-    flexDirection: 'row',
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-    marginBottom: 4,
+    flexDirection: 'row', paddingVertical: 6,
+    borderBottomWidth: 1, borderBottomColor: COLORS.border, marginBottom: 4,
   },
-  tableHeaderCell: {
-    flex: 1,
-    fontSize: 10,
-    fontWeight: '800',
-    color: COLORS.text_muted,
-    textAlign: 'center',
-    letterSpacing: 0.5,
-  },
+  tableHeaderCell: { flex: 1, fontSize: 10, fontWeight: '800', color: COLORS.text_muted, textAlign: 'center', letterSpacing: 0.5 },
   tableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: `${COLORS.border}50`,
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 8,
+    borderBottomWidth: 1, borderBottomColor: `${COLORS.border}50`,
   },
-  tableNameCell: {
-    flex: 2,
-    paddingRight: 8,
-  },
-  tablePlayerName: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.text_primary,
-  },
-  dismissalText: {
-    fontSize: 10,
-    color: COLORS.danger,
-    fontWeight: '600',
-  },
-  notOutText: {
-    fontSize: 10,
-    color: COLORS.primary,
-    fontWeight: '600',
-  },
-  tableCell: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.text_primary,
-    textAlign: 'center',
-  },
-  extrasRow: {
-    flexDirection: 'row',
-    gap: 10,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    marginTop: 8,
-  },
+  tableNameCell: { flex: 2, paddingRight: 8 },
+  tablePlayerName: { fontSize: 13, fontWeight: '700', color: COLORS.text_primary },
+  dismissalText: { fontSize: 10, color: COLORS.danger, fontWeight: '600' },
+  notOutText: { fontSize: 10, color: COLORS.primary, fontWeight: '600' },
+  tableCell: { flex: 1, fontSize: 13, fontWeight: '700', color: COLORS.text_primary, textAlign: 'center' },
+  extrasRow: { flexDirection: 'row', gap: 10, paddingVertical: 10, borderTopWidth: 1, borderTopColor: COLORS.border, marginTop: 8 },
   extrasLabel: { fontSize: 12, fontWeight: '700', color: COLORS.text_muted, minWidth: 55 },
   extrasValue: { flex: 1, fontSize: 11, color: COLORS.text_secondary, flexWrap: 'wrap' },
-  totalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
   totalLabel: { fontSize: 14, fontWeight: '800', color: COLORS.text_primary },
   totalValue: { fontSize: 14, fontWeight: '900', color: COLORS.primary },
-  fowWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingVertical: 8,
-  },
+  fowWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingVertical: 8 },
   fowItem: {
-    fontSize: 11,
-    color: COLORS.text_secondary,
-    backgroundColor: COLORS.bg_elevated,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    fontWeight: '600',
+    fontSize: 11, color: COLORS.text_secondary, backgroundColor: COLORS.bg_elevated,
+    borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, fontWeight: '600',
   },
   backToScoringBtn: { margin: 16 },
   backToScoringGrad: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderRadius: 14,
-    paddingVertical: 14,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, borderRadius: 14, paddingVertical: 14,
   },
   backToScoringText: { fontSize: 15, fontWeight: '800', color: '#000' },
 });

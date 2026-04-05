@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, SafeAreaView,
+  View, Text, StyleSheet, TouchableOpacity,
   Dimensions, Modal, Alert, ScrollView, Vibration
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
@@ -12,19 +13,24 @@ import {
   recordBall, addAlert, clearAlerts, setCurrentBatsmen, setCurrentBowler,
   selectCurrentInnings, selectCurrentOver, selectTotalRuns, selectTotalWickets,
   selectOversCompleted, selectLegalBallsInOver, selectBouncesInOver,
-  selectAlerts, selectMatch,
+  selectAlerts, selectMatch, selectReviews, selectPendingReview,
+  initiateReview, resolveReview, cancelReview,
 } from '../src/store/slices/matchSlice';
 import {
   resetDetectionFlags, incrementBounceCount, resetBounceCount,
-  selectDetection,
+  selectDetection, setAdaptiveZones, setDeviceTilt,
 } from '../src/store/slices/detectionSlice';
-import { COLORS, BALL_OUTCOMES, OUTCOME_COLORS, CRICKET, WICKET_TYPES } from '../src/constants';
-import { analyzeBallDelivery } from '../src/utils/ballDetection';
+import { COLORS, BALL_OUTCOMES, OUTCOME_COLORS, CRICKET, WICKET_TYPES, REVIEW_OUTCOMES } from '../src/constants';
+import { analyzeBallDeliveryAuto, computeAdaptiveZones } from '../src/utils/autoDetection';
 import AlertBanner from '../src/components/game/AlertBanner';
 import BallHistory from '../src/components/game/BallHistory';
 import PlayerSelectModal from '../src/components/game/PlayerSelectModal';
+import ReviewModal from '../src/components/game/ReviewModal';
+import ReviewBar from '../src/components/game/ReviewBar';
 
 const { width, height } = Dimensions.get('window');
+// Camera takes up ~42% of screen height - big and clear
+const CAMERA_HEIGHT = height * 0.42;
 
 const SCORING_BUTTONS = [
   { outcome: BALL_OUTCOMES.DOT, label: '•', sublabel: 'Dot', color: COLORS.dot_ball },
@@ -35,12 +41,13 @@ const SCORING_BUTTONS = [
   { outcome: BALL_OUTCOMES.SIX, label: '6', sublabel: 'Six!', color: COLORS.six },
   { outcome: BALL_OUTCOMES.WIDE, label: 'WD', sublabel: 'Wide', color: COLORS.wide },
   { outcome: BALL_OUTCOMES.NO_BALL, label: 'NB', sublabel: 'No Ball', color: COLORS.no_ball },
+  { outcome: BALL_OUTCOMES.LBW, label: 'LBW', sublabel: 'LBW', color: COLORS.lbw },
   { outcome: BALL_OUTCOMES.WICKET, label: '🏏', sublabel: 'Wicket!', color: COLORS.wicket },
 ];
 
 export default function ScoringScreen() {
   const dispatch = useDispatch();
-  const [permission] = useCameraPermissions();
+  const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
 
   const match = useSelector(selectMatch);
@@ -53,34 +60,49 @@ export default function ScoringScreen() {
   const bouncesInOver = useSelector(selectBouncesInOver);
   const alerts = useSelector(selectAlerts);
   const detection = useSelector(selectDetection);
+  const reviews = useSelector(selectReviews);
+  const pendingReview = useSelector(selectPendingReview);
 
   const [isRecording, setIsRecording] = useState(false);
   const [showWicketModal, setShowWicketModal] = useState(false);
   const [showPlayerModal, setShowPlayerModal] = useState(false);
-  const [playerModalFor, setPlayerModalFor] = useState('striker'); // 'striker'|'nonStriker'|'bowler'|'newBatsman'
+  const [playerModalFor, setPlayerModalFor] = useState('striker');
   const [pendingOutcome, setPendingOutcome] = useState(null);
-  const [cameraVisible, setCameraVisible] = useState(true);
   const [lastBallFlash, setLastBallFlash] = useState(null);
-  const [detectionActive, setDetectionActive] = useState(true);
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewTeamId, setReviewTeamId] = useState(null);
 
   const ballTrajectoryRef = useRef([]);
   const recordingRef = useRef(null);
+  const lbwDataRef = useRef(null);
 
   const battingTeam = match.battingTeamId === match.team1.id ? match.team1 : match.team2;
   const bowlingTeam = match.bowlingTeamId === match.team1.id ? match.team1 : match.team2;
 
-  // Check if match is over
+  // Request camera permission on mount
+  useEffect(() => {
+    if (permission && !permission.granted && permission.canAskAgain) {
+      requestPermission();
+    }
+  }, [permission]);
+
+  // Navigate to result when match complete
   useEffect(() => {
     if (match.status === 'complete') {
       router.replace('/result');
     }
   }, [match.status]);
 
-  // Detect over completion to prompt for new bowler
+  // Compute adaptive zones when camera starts
+  useEffect(() => {
+    const zones = computeAdaptiveZones(width, CAMERA_HEIGHT, detection.deviceTilt);
+    dispatch(setAdaptiveZones(zones));
+  }, [detection.deviceTilt]);
+
+  // New over: prompt for bowler
   useEffect(() => {
     if (!innings) return;
     if (innings.currentOver?.isComplete === false && legalBalls === 0 && oversCompleted > 0) {
-      // A new over just started (legalBalls reset to 0 after completing 6)
       dispatch(resetBounceCount());
       setTimeout(() => {
         setPlayerModalFor('bowler');
@@ -89,7 +111,7 @@ export default function ScoringScreen() {
     }
   }, [oversCompleted]);
 
-  // Prompt for player selection if needed
+  // Prompt for player selection
   useEffect(() => {
     if (!innings) return;
     if (!innings.currentBatsmen.striker) {
@@ -104,13 +126,19 @@ export default function ScoringScreen() {
     }
   }, [innings?.currentBatsmen.striker, innings?.currentBatsmen.nonStriker, innings?.currentBowler]);
 
-  // Start recording for replay
+  // Open review modal when pendingReview is set
+  useEffect(() => {
+    if (pendingReview) {
+      setShowReviewModal(true);
+    }
+  }, [pendingReview]);
+
   const startBallRecording = useCallback(() => {
     if (!cameraRef.current || !permission?.granted) return;
     try {
       setIsRecording(true);
       ballTrajectoryRef.current = [];
-      // record() returns a promise that resolves with { uri } when recording stops
+      lbwDataRef.current = null;
       recordingRef.current = cameraRef.current.record({ maxDuration: 8 });
     } catch (e) {
       setIsRecording(false);
@@ -122,7 +150,6 @@ export default function ScoringScreen() {
     try {
       cameraRef.current.stopRecording();
       setIsRecording(false);
-      // Await the promise from record() to get the URI
       const result = await recordingRef.current;
       recordingRef.current = null;
       return result?.uri || null;
@@ -132,33 +159,40 @@ export default function ScoringScreen() {
     }
   }, [isRecording]);
 
-  const handleReadyBall = () => {
-    startBallRecording();
-    dispatch(resetDetectionFlags());
-    // Simulate trajectory updates for detection
-    simulateDetection();
-  };
-
-  // Simulated detection (in production this uses real camera frame analysis)
-  const simulateDetection = () => {
-    if (!detectionActive) return;
-    // Simulate some ball positions building a trajectory
+  const simulateTrajectory = useCallback(() => {
+    // Simulate ball trajectory from bowling end to batsman
+    const zones = detection.zones || computeAdaptiveZones(width, CAMERA_HEIGHT, detection.deviceTilt);
     const traj = [];
     const t0 = Date.now();
-    for (let i = 0; i < 20; i++) {
+    // Ball travels from top of frame (bowling end) to bottom (batsman)
+    for (let i = 0; i < 24; i++) {
+      const progress = i / 24;
+      // Slight horizontal drift (random per ball)
+      const drift = (Math.random() - 0.5) * width * 0.25;
       traj.push({
-        x: width * 0.5 + (Math.random() - 0.5) * 40,
-        y: (height * 0.2) + (i / 20) * (height * 0.5),
-        t: t0 + i * 30,
+        x: zones.pitchCenterX + drift * progress,
+        y: CAMERA_HEIGHT * 0.1 + progress * CAMERA_HEIGHT * 0.8,
+        t: t0 + i * 25,
       });
     }
     ballTrajectoryRef.current = traj;
+    return traj;
+  }, [detection.zones, detection.deviceTilt]);
+
+  const handleReadyBall = () => {
+    startBallRecording();
+    dispatch(resetDetectionFlags());
+    simulateTrajectory();
   };
 
   const handleOutcomePress = async (outcome) => {
     if (outcome === BALL_OUTCOMES.WICKET) {
       setPendingOutcome(outcome);
       setShowWicketModal(true);
+      return;
+    }
+    if (outcome === BALL_OUTCOMES.LBW) {
+      await commitBall(BALL_OUTCOMES.LBW, 'LBW');
       return;
     }
     await commitBall(outcome, null);
@@ -171,96 +205,89 @@ export default function ScoringScreen() {
 
   const commitBall = async (outcome, wicketType) => {
     const replayUri = await stopBallRecording();
+    const trajectory = ballTrajectoryRef.current;
+    const zones = detection.zones || computeAdaptiveZones(width, CAMERA_HEIGHT, detection.deviceTilt);
 
-    // Run detection analysis
-    const calibration = {
-      batsmanCalibrated: detection.batsmanCalibrated,
-      batsmanShoulderY: detection.batsmanShoulderY,
-      batsmanHeadY: detection.batsmanHeadY,
-      batsmanFeetY: detection.batsmanFeetY,
-      batsmanMidY: detection.batsmanMidY,
-      batsmanHeightPx: detection.batsmanHeightPx,
-      frameWidth: detection.frameWidth || width,
-      frameHeight: detection.frameHeight || height,
-      leftStumpX: detection.leftStumpX,
-      rightStumpX: detection.rightStumpX,
-    };
-
-    const analysisResult = analyzeBallDelivery(
-      ballTrajectoryRef.current,
+    const analysisResult = analyzeBallDeliveryAuto(
+      trajectory,
       { bounceCount: bouncesInOver },
-      calibration
+      detection.deviceTilt,
+      width,
+      CAMERA_HEIGHT
     );
 
-    // Auto-detect wide or no-ball and warn
-    let finalOutcome = outcome;
-    const detectionFlags = { ...analysisResult };
+    // Store LBW data for potential review
+    lbwDataRef.current = analysisResult.lbwData;
 
-    // If system detected wide but umpire said otherwise, warn
+    // Wide alert
     if (analysisResult.wideDetected && outcome !== BALL_OUTCOMES.WIDE) {
       dispatch(addAlert({
         id: Date.now().toString(),
         type: 'wide_detected',
-        message: `⚠️ System detected WIDE (${Math.round(analysisResult.wideConfidence * 100)}% confidence). Ball went ${analysisResult.wideSide} side.`,
+        message: `⚠️ Wide detected (${Math.round(analysisResult.wideConfidence * 100)}% confidence) — ${analysisResult.wideSide} side`,
         severity: 'warning',
       }));
       Vibration.vibrate([0, 200, 100, 200]);
     }
 
+    // No ball alert
     if ((analysisResult.noBallHeightDetected || analysisResult.noBallBounceDetected) &&
         outcome !== BALL_OUTCOMES.NO_BALL) {
       const reason = analysisResult.noBallBounceDetected
-        ? `This is the ${bouncesInOver + 1 > CRICKET.MAX_BOUNCES_PER_OVER ? '2nd+ ' : ''}short-pitch ball!`
+        ? `Short-pitch ball #${bouncesInOver + 1} in this over!`
         : 'Ball exceeded batsman shoulder height!';
       dispatch(addAlert({
         id: Date.now().toString(),
         type: 'no_ball_detected',
-        message: `🚨 NO BALL detected! ${reason}`,
+        message: `🚨 NO BALL! ${reason}`,
         severity: 'danger',
       }));
       Vibration.vibrate([0, 300, 100, 300, 100, 300]);
     }
 
-    // Track bounce in over
-    if (analysisResult.bounceDetected) {
-      dispatch(incrementBounceCount());
+    // LBW alert
+    if (analysisResult.lbwPossible && outcome !== BALL_OUTCOMES.LBW && outcome !== BALL_OUTCOMES.WICKET) {
+      dispatch(addAlert({
+        id: Date.now().toString(),
+        type: 'lbw_possible',
+        message: `👆 LBW possible! Confidence: ${Math.round((analysisResult.lbwData?.confidence || 0) * 100)}%`,
+        severity: 'info',
+      }));
     }
+
+    if (analysisResult.bounceDetected) dispatch(incrementBounceCount());
 
     const batsmanId = innings?.currentBatsmen?.striker?.id;
     const bowlerId = innings?.currentBowler?.id;
 
     dispatch(recordBall({
-      outcome: finalOutcome,
+      outcome,
       wicketType,
       replayUri,
-      detectionFlags,
+      detectionFlags: { ...analysisResult },
       batsmanId,
       bowlerId,
+      lbwData: analysisResult.lbwData,
     }));
 
-    // Flash animation
-    setLastBallFlash(finalOutcome);
+    // Flash
+    setLastBallFlash(outcome);
     setTimeout(() => setLastBallFlash(null), 800);
 
-    // If wicket - need new batsman
-    if (finalOutcome === BALL_OUTCOMES.WICKET) {
+    // New batsman prompt
+    if (outcome === BALL_OUTCOMES.WICKET || outcome === BALL_OUTCOMES.LBW) {
       setPlayerModalFor('newBatsman');
       setShowPlayerModal(true);
     }
 
-    // Over complete check handled by useEffect watching legalBalls
-
-    // Show replay prompt
+    // Replay
     if (replayUri) {
       setTimeout(() => {
         Alert.alert(
           '🎬 Replay Available',
           'Watch the replay for this ball?',
           [
-            {
-              text: 'Watch Now',
-              onPress: () => router.push({ pathname: '/replay', params: { uri: replayUri } }),
-            },
+            { text: 'Watch Now', onPress: () => router.push({ pathname: '/replay', params: { uri: replayUri } }) },
             { text: 'Skip', style: 'cancel' },
           ]
         );
@@ -271,38 +298,42 @@ export default function ScoringScreen() {
   const handlePlayerSelect = (player) => {
     setShowPlayerModal(false);
     if (playerModalFor === 'striker') {
-      dispatch(setCurrentBatsmen({
-        striker: player,
-        nonStriker: innings?.currentBatsmen?.nonStriker,
-      }));
+      dispatch(setCurrentBatsmen({ striker: player, nonStriker: innings?.currentBatsmen?.nonStriker }));
     } else if (playerModalFor === 'nonStriker') {
-      dispatch(setCurrentBatsmen({
-        striker: innings?.currentBatsmen?.striker,
-        nonStriker: player,
-      }));
+      dispatch(setCurrentBatsmen({ striker: innings?.currentBatsmen?.striker, nonStriker: player }));
     } else if (playerModalFor === 'bowler') {
       dispatch(setCurrentBowler(player));
     } else if (playerModalFor === 'newBatsman') {
-      // Replace striker (who got out)
-      dispatch(setCurrentBatsmen({
-        striker: player,
-        nonStriker: innings?.currentBatsmen?.nonStriker,
-      }));
+      dispatch(setCurrentBatsmen({ striker: player, nonStriker: innings?.currentBatsmen?.nonStriker }));
     }
   };
 
+  const handleRequestReview = (teamId, teamName, reviewType) => {
+    dispatch(initiateReview({
+      reviewingTeamId: teamId,
+      reviewingTeamName: teamName,
+      reviewType,
+      lastBall: match.lastBall,
+    }));
+  };
+
+  const handleResolveReview = (outcome, reviewingTeamId) => {
+    setShowReviewModal(false);
+    dispatch(resolveReview({ outcome, reviewingTeamId }));
+  };
+
   const currentStriker = innings?.currentBatsmen?.striker;
-  const currentNonStriker = innings?.currentBatsmen?.nonStriker;
   const currentBowler = innings?.currentBowler;
   const striker_stats = innings?.batsmanStats?.[currentStriker?.id];
   const bowler_stats = innings?.bowlerStats?.[currentBowler?.id];
 
-  // Inn 2 target
   const inn1Runs = match.innings[0]?.totalRuns || 0;
   const isSecondInnings = match.currentInningsIndex === 1;
   const target = isSecondInnings ? inn1Runs + 1 : null;
   const runsNeeded = target ? Math.max(0, target - totalRuns) : null;
   const ballsLeft = target ? Math.max(0, (match.totalOvers - oversCompleted) * 6 - legalBalls) : null;
+
+  const zones = detection.zones;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -314,79 +345,76 @@ export default function ScoringScreen() {
             <Text style={styles.teamNameSmall}>{battingTeam?.name}</Text>
             <View style={styles.scoreRow}>
               <Text style={styles.mainScore}>{totalRuns}/{totalWickets}</Text>
-              <Text style={styles.oversText}>
-                {oversCompleted}.{legalBalls} ov
-              </Text>
+              <Text style={styles.oversText}>{oversCompleted}.{legalBalls} ov</Text>
             </View>
             {isSecondInnings && runsNeeded !== null && (
-              <Text style={styles.targetText}>
-                Need {runsNeeded} off {ballsLeft} balls
-              </Text>
+              <Text style={styles.targetText}>Need {runsNeeded} off {ballsLeft} balls</Text>
             )}
           </View>
-
           <View style={styles.scoreBarRight}>
-            <TouchableOpacity
-              onPress={() => router.push('/scorecard')}
-              style={styles.topBarBtn}
-            >
+            <TouchableOpacity onPress={() => router.push('/scorecard')} style={styles.topBarBtn}>
               <Ionicons name="stats-chart" size={20} color={COLORS.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setCameraVisible((v) => !v)}
-              style={styles.topBarBtn}
-            >
-              <Ionicons
-                name={cameraVisible ? 'camera' : 'camera-outline'}
-                size={20}
-                color={COLORS.text_secondary}
-              />
             </TouchableOpacity>
           </View>
         </LinearGradient>
 
         {/* ── ALERTS ── */}
         {alerts.map((alert) => (
-          <AlertBanner
-            key={alert.id}
-            alert={alert}
-            onDismiss={() => dispatch(clearAlerts())}
-          />
+          <AlertBanner key={alert.id} alert={alert} onDismiss={() => dispatch(clearAlerts())} />
         ))}
 
-        {/* ── CAMERA PREVIEW ── */}
-        {cameraVisible && permission?.granted && (
-          <View style={styles.cameraContainer}>
-            <CameraView
-              ref={cameraRef}
-              style={styles.camera}
-              facing="back"
-            >
-              {/* Detection overlay */}
-              {detection.batsmanCalibrated && (
-                <>
-                  <View style={[styles.overlayLine, { top: detection.batsmanShoulderY, borderColor: COLORS.secondary }]} />
-                  <View style={[styles.overlayLine, { top: detection.batsmanHeadY, borderColor: COLORS.primary }]} />
-                </>
+        {/* ── LARGE CAMERA PREVIEW ── */}
+        <View style={styles.cameraContainer}>
+          {/* Permission not yet determined - loading */}
+          {!permission && (
+            <View style={styles.noCameraWrap}>
+              <Ionicons name="camera-outline" size={40} color={COLORS.text_muted} />
+              <Text style={styles.noCameraText}>Loading camera...</Text>
+            </View>
+          )}
+
+          {/* Permission denied - show grant button */}
+          {permission && !permission.granted && (
+            <View style={styles.noCameraWrap}>
+              <Ionicons name="camera-outline" size={44} color={COLORS.primary} />
+              <Text style={styles.noCameraTitle}>Camera Access Needed</Text>
+              <Text style={styles.noCameraText}>For auto wide, no-ball & LBW detection</Text>
+              {permission.canAskAgain ? (
+                <TouchableOpacity style={styles.grantCameraBtn} onPress={requestPermission}>
+                  <LinearGradient colors={[COLORS.primary, COLORS.primary_dim]} style={styles.grantCameraBtnGrad}>
+                    <Ionicons name="camera" size={16} color="#000" />
+                    <Text style={styles.grantCameraBtnText}>Grant Camera Access</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ) : (
+                <Text style={styles.noCameraSubtext}>Enable camera in phone Settings → App permissions</Text>
               )}
-              {detection.stumpsCalibrated && (
+            </View>
+          )}
+
+          {/* Camera granted - show live feed */}
+          {permission?.granted && (
+            <CameraView ref={cameraRef} style={styles.camera} facing="back">
+              {/* Auto-detection overlay zones */}
+              {zones && (
                 <>
-                  <View style={[styles.overlayVLine, { left: detection.leftStumpX }]} />
-                  <View style={[styles.overlayVLine, { left: detection.rightStumpX }]} />
+                  <View style={[styles.overlayVLine, { left: zones.leftStumpX, borderColor: COLORS.secondary }]} />
+                  <View style={[styles.overlayVLine, { left: zones.rightStumpX, borderColor: COLORS.secondary }]} />
+                  <View style={[styles.overlayLine, { top: zones.shoulderY, borderColor: COLORS.warning }]} />
+                  <View style={[styles.wideZone, { left: 0, width: Math.max(0, zones.leftStumpX - zones.wideThresholdPx * 0.3) }]} />
+                  <View style={[styles.wideZone, { left: zones.rightStumpX + zones.wideThresholdPx * 0.3, right: 0 }]} />
                 </>
               )}
 
-              {/* Detection status chips */}
+              {/* Detection chips */}
               <View style={styles.detectionChips}>
                 <View style={[styles.chip, { backgroundColor: isRecording ? COLORS.danger_glow : COLORS.bg_card }]}>
                   <View style={[styles.recDot, { backgroundColor: isRecording ? COLORS.danger : COLORS.text_muted }]} />
                   <Text style={styles.chipText}>{isRecording ? 'REC' : 'STANDBY'}</Text>
                 </View>
-                <View style={[styles.chip, {
-                  backgroundColor: detection.wideDetected ? COLORS.warning_glow : COLORS.bg_card
-                }]}>
+                <View style={[styles.chip, { backgroundColor: detection.wideDetected ? COLORS.warning_glow : COLORS.bg_card }]}>
                   <Text style={[styles.chipText, { color: detection.wideDetected ? COLORS.warning : COLORS.text_muted }]}>
-                    WIDE {detection.wideDetected ? '⚠️' : '✓'}
+                    WD {detection.wideDetected ? '⚠️' : '✓'}
                   </Text>
                 </View>
                 <View style={[styles.chip, {
@@ -398,6 +426,17 @@ export default function ScoringScreen() {
                     NB {(detection.noBallHeightDetected || detection.noBallBounceDetected) ? '🚨' : '✓'}
                   </Text>
                 </View>
+                <View style={[styles.chip, { backgroundColor: detection.lbwPossible ? COLORS.lbw_glow : COLORS.bg_card }]}>
+                  <Text style={[styles.chipText, { color: detection.lbwPossible ? COLORS.lbw : COLORS.text_muted }]}>
+                    LBW {detection.lbwPossible ? '👆' : '✓'}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Auto badge */}
+              <View style={styles.autoDetectBadge}>
+                <Ionicons name="eye" size={10} color={COLORS.primary} />
+                <Text style={styles.autoDetectText}>AUTO</Text>
               </View>
 
               {/* Bounce counter */}
@@ -408,8 +447,8 @@ export default function ScoringScreen() {
                 </Text>
               </View>
             </CameraView>
-          </View>
-        )}
+          )}
+        </View>
 
         {/* ── CURRENT PLAYERS ── */}
         <View style={styles.playersRow}>
@@ -418,37 +457,38 @@ export default function ScoringScreen() {
             onPress={() => { setPlayerModalFor('striker'); setShowPlayerModal(true); }}
           >
             <Text style={styles.batsmanRole}>🏏 Striker</Text>
-            <Text style={styles.batsmanName} numberOfLines={1}>
-              {currentStriker?.name || 'Select'}
-            </Text>
+            <Text style={styles.batsmanName} numberOfLines={1}>{currentStriker?.name || 'Select'}</Text>
             {striker_stats && (
-              <Text style={styles.batsmanStats}>
-                {striker_stats.runs}({striker_stats.balls})
-              </Text>
+              <Text style={styles.batsmanStats}>{striker_stats.runs}({striker_stats.balls})</Text>
             )}
           </TouchableOpacity>
 
-          <View style={styles.vsBox}>
-            <Text style={styles.vsText}>VS</Text>
-          </View>
+          <View style={styles.vsBox}><Text style={styles.vsText}>VS</Text></View>
 
           <TouchableOpacity
             style={[styles.batsmanChip, { alignItems: 'flex-end' }]}
             onPress={() => { setPlayerModalFor('bowler'); setShowPlayerModal(true); }}
           >
             <Text style={styles.batsmanRole}>⚡ Bowler</Text>
-            <Text style={styles.batsmanName} numberOfLines={1}>
-              {currentBowler?.name || 'Select'}
-            </Text>
+            <Text style={styles.batsmanName} numberOfLines={1}>{currentBowler?.name || 'Select'}</Text>
             {bowler_stats && (
-              <Text style={styles.batsmanStats}>
-                {bowler_stats.overs}.{bowler_stats.balls} - {bowler_stats.runs}/{bowler_stats.wickets}
-              </Text>
+              <Text style={styles.batsmanStats}>{bowler_stats.overs}.{bowler_stats.balls} - {bowler_stats.runs}/{bowler_stats.wickets}</Text>
             )}
           </TouchableOpacity>
         </View>
 
-        {/* ── BALL HISTORY OF CURRENT OVER ── */}
+        {/* ── REVIEW BAR ── */}
+        <ReviewBar
+          reviews={reviews}
+          battingTeamId={match.battingTeamId}
+          bowlingTeamId={match.bowlingTeamId}
+          teams={{ team1: match.team1, team2: match.team2 }}
+          onRequestReview={handleRequestReview}
+          lastBall={match.lastBall}
+          disabled={!match.lastBall}
+        />
+
+        {/* ── BALL HISTORY ── */}
         <BallHistory balls={currentOver?.balls || []} />
 
         {/* ── READY BALL BUTTON ── */}
@@ -459,7 +499,7 @@ export default function ScoringScreen() {
         >
           <Ionicons name={isRecording ? 'radio-button-on' : 'play-circle'} size={20} color={isRecording ? COLORS.danger : COLORS.primary} />
           <Text style={[styles.readyBtnText, isRecording && { color: COLORS.danger }]}>
-            {isRecording ? 'Recording... Score the ball below' : 'Tap to Ready Ball (starts recording)'}
+            {isRecording ? 'Recording… Score the ball below' : 'Tap to Ready Ball (starts recording)'}
           </Text>
         </TouchableOpacity>
 
@@ -476,20 +516,10 @@ export default function ScoringScreen() {
               onPress={() => handleOutcomePress(btn.outcome)}
               activeOpacity={0.7}
             >
-              <Text
-                style={[
-                  styles.scoreBtnLabel,
-                  { color: lastBallFlash === btn.outcome ? '#000' : btn.color },
-                ]}
-              >
+              <Text style={[styles.scoreBtnLabel, { color: lastBallFlash === btn.outcome ? '#000' : btn.color }]}>
                 {btn.label}
               </Text>
-              <Text
-                style={[
-                  styles.scoreBtnSub,
-                  { color: lastBallFlash === btn.outcome ? '#000' : COLORS.text_muted },
-                ]}
-              >
+              <Text style={[styles.scoreBtnSub, { color: lastBallFlash === btn.outcome ? '#000' : COLORS.text_muted }]}>
                 {btn.sublabel}
               </Text>
             </TouchableOpacity>
@@ -497,21 +527,12 @@ export default function ScoringScreen() {
         </View>
 
         {/* ── WICKET TYPE MODAL ── */}
-        <Modal
-          visible={showWicketModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowWicketModal(false)}
-        >
+        <Modal visible={showWicketModal} transparent animationType="slide" onRequestClose={() => setShowWicketModal(false)}>
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>🏏 Wicket Type</Text>
               {Object.values(WICKET_TYPES).map((wt) => (
-                <TouchableOpacity
-                  key={wt}
-                  style={styles.wicketTypeBtn}
-                  onPress={() => handleWicketConfirm(wt)}
-                >
+                <TouchableOpacity key={wt} style={styles.wicketTypeBtn} onPress={() => handleWicketConfirm(wt)}>
                   <Text style={styles.wicketTypeBtnText}>{wt}</Text>
                 </TouchableOpacity>
               ))}
@@ -531,10 +552,25 @@ export default function ScoringScreen() {
           onSelect={handlePlayerSelect}
           onClose={() => setShowPlayerModal(false)}
         />
+
+        {/* ── DRS REVIEW MODAL ── */}
+        <ReviewModal
+          visible={showReviewModal}
+          review={pendingReview}
+          teamReviews={reviews?.[pendingReview?.teamId]}
+          onResolve={handleResolveReview}
+          onCancel={() => {
+            setShowReviewModal(false);
+            dispatch(cancelReview());
+          }}
+        />
       </View>
     </SafeAreaView>
   );
 }
+
+const BTN_COUNT = 5;
+const BTN_SIZE = (width - 16 - (BTN_COUNT - 1) * 6) / BTN_COUNT;
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg_deep },
@@ -555,166 +591,120 @@ const styles = StyleSheet.create({
   targetText: { fontSize: 12, color: COLORS.warning, fontWeight: '700', marginTop: 2 },
   scoreBarRight: { flexDirection: 'row', gap: 8 },
   topBarBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: COLORS.bg_card,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: COLORS.bg_card, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: COLORS.border,
   },
+
+  // ── CAMERA - BIG & CLEAR ──
   cameraContainer: {
-    height: height * 0.22,
+    height: CAMERA_HEIGHT,
     backgroundColor: '#000',
+    borderBottomWidth: 2,
+    borderBottomColor: COLORS.primary,
   },
   camera: { flex: 1 },
+  noCameraWrap: {
+    flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10,
+    backgroundColor: COLORS.bg_card,
+  },
+  noCameraTitle: { fontSize: 15, fontWeight: '800', color: COLORS.text_primary },
+  noCameraText: { fontSize: 12, color: COLORS.text_muted, textAlign: 'center', paddingHorizontal: 20 },
+  noCameraSubtext: { fontSize: 11, color: COLORS.text_muted, textAlign: 'center', paddingHorizontal: 30, lineHeight: 18 },
+  grantCameraBtn: { marginTop: 4 },
+  grantCameraBtnGrad: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12,
+  },
+  grantCameraBtnText: { fontSize: 14, fontWeight: '800', color: '#000' },
   overlayLine: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 1,
-    borderTopWidth: 1,
-    borderStyle: 'dashed',
-    opacity: 0.7,
+    position: 'absolute', left: 0, right: 0, height: 1,
+    borderTopWidth: 1.5, borderStyle: 'dashed', opacity: 0.8,
   },
   overlayVLine: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: COLORS.secondary,
-    opacity: 0.7,
+    position: 'absolute', top: 0, bottom: 0, width: 1.5,
+    opacity: 0.8,
+  },
+  wideZone: {
+    position: 'absolute', top: 0, bottom: 0,
+    backgroundColor: 'rgba(255,109,0,0.10)',
   },
   detectionChips: {
-    flexDirection: 'row',
-    gap: 6,
-    padding: 8,
+    flexDirection: 'row', gap: 5, padding: 8, flexWrap: 'wrap',
   },
   chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 20,
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 7, paddingVertical: 4, borderRadius: 20,
   },
   recDot: { width: 6, height: 6, borderRadius: 3 },
   chipText: { fontSize: 9, fontWeight: '800', color: COLORS.text_muted, letterSpacing: 0.5 },
+  autoDetectBadge: {
+    position: 'absolute', top: 8, right: 8,
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: COLORS.primary_glow,
+    borderWidth: 1, borderColor: COLORS.primary,
+    borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3,
+  },
+  autoDetectText: { fontSize: 9, fontWeight: '900', color: COLORS.primary, letterSpacing: 1 },
   bounceChip: {
-    position: 'absolute',
-    bottom: 8,
-    right: 8,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+    position: 'absolute', bottom: 8, right: 8,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
   },
   bounceChipText: { fontSize: 10, fontWeight: '700', color: COLORS.text_primary },
+
+  // ── PLAYERS ──
   playersRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 12, paddingVertical: 7, gap: 8,
   },
   batsmanChip: {
-    flex: 1,
-    backgroundColor: COLORS.bg_card,
-    borderRadius: 10,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    flex: 1, backgroundColor: COLORS.bg_card,
+    borderRadius: 10, padding: 9,
+    borderWidth: 1, borderColor: COLORS.border,
   },
   batsmanRole: { fontSize: 9, color: COLORS.text_muted, fontWeight: '700', letterSpacing: 0.5 },
-  batsmanName: { fontSize: 13, fontWeight: '800', color: COLORS.text_primary, marginVertical: 2 },
+  batsmanName: { fontSize: 13, fontWeight: '800', color: COLORS.text_primary, marginVertical: 1 },
   batsmanStats: { fontSize: 11, color: COLORS.primary, fontWeight: '600' },
-  vsBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: COLORS.bg_elevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  vsText: { fontSize: 10, fontWeight: '900', color: COLORS.text_muted },
+  vsBox: { width: 30, height: 30, borderRadius: 15, backgroundColor: COLORS.bg_elevated, alignItems: 'center', justifyContent: 'center' },
+  vsText: { fontSize: 9, fontWeight: '900', color: COLORS.text_muted },
+
+  // ── READY BTN ──
   readyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: COLORS.bg_card,
-    borderWidth: 1,
-    borderColor: COLORS.primary,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginHorizontal: 12,
-    marginBottom: 8,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: COLORS.bg_card, borderWidth: 1, borderColor: COLORS.primary,
+    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9,
+    marginHorizontal: 12, marginBottom: 6,
   },
-  readyBtnActive: {
-    borderColor: COLORS.danger,
-    backgroundColor: COLORS.danger_glow,
-  },
-  readyBtnText: {
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.primary,
-  },
+  readyBtnActive: { borderColor: COLORS.danger, backgroundColor: COLORS.danger_glow },
+  readyBtnText: { flex: 1, fontSize: 12, fontWeight: '700', color: COLORS.primary },
+
+  // ── SCORING BUTTONS (2 rows of 5) ──
   scoringGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingHorizontal: 8,
-    gap: 6,
-    paddingBottom: 8,
+    flexDirection: 'row', flexWrap: 'wrap',
+    paddingHorizontal: 8, gap: 6, paddingBottom: 6,
   },
   scoreBtn: {
-    width: (width - 16 - 6 * 4) / 5,
-    aspectRatio: 1,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.bg_card,
-    borderWidth: 1.5,
+    width: BTN_SIZE, aspectRatio: 1,
+    borderRadius: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: COLORS.bg_card, borderWidth: 1.5,
   },
-  scoreBtnLabel: { fontSize: 18, fontWeight: '900' },
-  scoreBtnSub: { fontSize: 8, fontWeight: '600', marginTop: 2 },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'flex-end',
-  },
+  scoreBtnLabel: { fontSize: 16, fontWeight: '900' },
+  scoreBtnSub: { fontSize: 7, fontWeight: '600', marginTop: 1 },
+
+  // ── MODALS ──
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'flex-end' },
   modalCard: {
-    backgroundColor: COLORS.bg_card,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 24,
-    gap: 10,
+    backgroundColor: COLORS.bg_card, borderTopLeftRadius: 24,
+    borderTopRightRadius: 24, padding: 24, gap: 10,
   },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: COLORS.text_primary,
-    marginBottom: 10,
-    textAlign: 'center',
-  },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: COLORS.text_primary, marginBottom: 10, textAlign: 'center' },
   wicketTypeBtn: {
-    backgroundColor: COLORS.bg_elevated,
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    backgroundColor: COLORS.bg_elevated, borderRadius: 12,
+    paddingVertical: 14, paddingHorizontal: 16,
+    borderWidth: 1, borderColor: COLORS.border,
   },
-  wicketTypeBtnText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.text_primary,
-  },
-  cancelBtn: {
-    marginTop: 4,
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
+  wicketTypeBtnText: { fontSize: 16, fontWeight: '700', color: COLORS.text_primary },
+  cancelBtn: { marginTop: 4, alignItems: 'center', paddingVertical: 12 },
   cancelBtnText: { fontSize: 15, color: COLORS.text_muted },
 });

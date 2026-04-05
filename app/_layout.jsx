@@ -29,7 +29,7 @@ export default function RootLayout() {
           <Stack.Screen name="index" />
           <Stack.Screen name="setup" />
           <Stack.Screen name="toss" />
-          <Stack.Screen name="calibrate" />
+          {/* calibrate screen removed - auto detection replaces manual calibration */}
           <Stack.Screen name="scoring" />
           <Stack.Screen name="replay" />
           <Stack.Screen name="scorecard" />

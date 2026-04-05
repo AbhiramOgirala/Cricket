@@ -9,6 +9,8 @@
     "web": "expo start --web"
   },
   "overrides": {
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
     "@types/react": "~19.2.10"
   },
   "expo": {
@@ -42,6 +44,7 @@
     "expo-status-bar": "~55.0.5",
     "expo-video": "~55.0.13",
     "react": "19.2.0",
+    "react-dom": "19.2.0",
     "react-native": "0.83.4",
     "react-native-gesture-handler": "~2.30.0",
     "react-native-reanimated": "~4.2.1",
