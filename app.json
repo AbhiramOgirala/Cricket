@@ -42,11 +42,12 @@
     },
     "plugins": [
       "expo-router",
-      "expo-camera",
       [
-        "expo-av",
+        "expo-camera",
         {
-          "microphonePermission": "Allow Gully Cricket to access your microphone for recording replays."
+          "cameraPermission": "Allow Gully Cricket to access your camera to track the ball, detect wides, no-balls, and record replays.",
+          "microphonePermission": "Allow Gully Cricket to access your microphone for recording video replays.",
+          "recordAudioAndroid": true
         }
       ]
     ],

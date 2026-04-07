@@ -4,7 +4,7 @@ import {
   Dimensions, Modal, Alert, ScrollView, Vibration, Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Camera, CameraView, useCameraPermissions } from 'expo-camera';
+import { Camera, CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useDispatch, useSelector } from 'react-redux';
@@ -47,8 +47,9 @@ const SCORING_BUTTONS = [
 export default function ScoringScreen() {
   const dispatch = useDispatch();
 
-  // ── Camera permission ─────────────────────────────────────────────────────
+  // ── Camera & Audio permissions ────────────────────────────────────────────
   const [permission, requestPermission] = useCameraPermissions();
+  const [audioPermission, requestAudioPermission] = useMicrophonePermissions();
   // Extra manual flag so we can force-show camera after user grants
   const [permissionGranted, setPermissionGranted] = useState(false);
 
@@ -88,43 +89,55 @@ export default function ScoringScreen() {
   useEffect(() => {
     (async () => {
       try {
-        const { status } = await Camera.getCameraPermissionsAsync();
-        if (status === 'granted') {
+        const cameraStatus = await Camera.getCameraPermissionsAsync();
+        const audioStatus = await Camera.getMicrophonePermissionsAsync();
+        
+        if (cameraStatus.status === 'granted' && audioStatus.status === 'granted') {
           setPermissionGranted(true);
-        } else if (status === 'undetermined') {
+        } else if (cameraStatus.status === 'undetermined' || audioStatus.status === 'undetermined') {
           // Auto-request on first open
-          const result = await Camera.requestCameraPermissionsAsync();
-          if (result.status === 'granted') {
+          const cameraResult = await Camera.requestCameraPermissionsAsync();
+          const audioResult = await Camera.requestMicrophonePermissionsAsync();
+          
+          if (cameraResult.status === 'granted' && audioResult.status === 'granted') {
             setPermissionGranted(true);
           }
         }
       } catch (e) {
-        console.warn('Camera permission check failed:', e);
+        console.warn('Permission check failed:', e);
       }
     })();
   }, []);
 
   // Sync with hook-based permission state
   useEffect(() => {
-    if (permission?.granted) {
+    if (permission?.granted && audioPermission?.granted) {
       setPermissionGranted(true);
     }
-  }, [permission]);
+  }, [permission, audioPermission]);
 
   const handleRequestPermission = async () => {
     try {
-      const result = await requestPermission();
-      if (result?.granted) {
+      const cameraResult = await requestPermission();
+      const audioResult = await requestAudioPermission();
+      
+      if (cameraResult?.granted && audioResult?.granted) {
         setPermissionGranted(true);
       } else {
         // Permission denied via hook - try the Camera API directly as fallback
-        const directResult = await Camera.requestCameraPermissionsAsync();
-        if (directResult.status === 'granted') {
+        const directCameraResult = await Camera.requestCameraPermissionsAsync();
+        const directAudioResult = await Camera.requestMicrophonePermissionsAsync();
+        
+        if (directCameraResult.status === 'granted' && directAudioResult.status === 'granted') {
           setPermissionGranted(true);
         } else {
+          const missingPerms = [];
+          if (directCameraResult.status !== 'granted') missingPerms.push('Camera');
+          if (directAudioResult.status !== 'granted') missingPerms.push('Microphone');
+          
           Alert.alert(
-            'Camera Permission Required',
-            'Please enable camera access in your phone Settings → Apps → Gully Cricket → Permissions → Camera.',
+            'Permissions Required',
+            `Please enable ${missingPerms.join(' and ')} access in your phone Settings → Apps → Gully Cricket → Permissions.`,
             [{ text: 'OK' }]
           );
         }
@@ -454,14 +467,14 @@ export default function ScoringScreen() {
     return (
       <View style={styles.noCameraWrap}>
         <Ionicons name="camera-outline" size={44} color={COLORS.primary} />
-        <Text style={styles.noCameraTitle}>Camera Access Needed</Text>
+        <Text style={styles.noCameraTitle}>Camera & Microphone Access Needed</Text>
         <Text style={styles.noCameraText}>
-          For auto wide, no-ball & LBW detection
+          For auto wide, no-ball & LBW detection with video recording
         </Text>
         <TouchableOpacity style={styles.grantCameraBtn} onPress={handleRequestPermission}>
           <LinearGradient colors={[COLORS.primary, COLORS.primary_dim]} style={styles.grantCameraBtnGrad}>
             <Ionicons name="camera" size={16} color="#000" />
-            <Text style={styles.grantCameraBtnText}>Grant Camera Access</Text>
+            <Text style={styles.grantCameraBtnText}>Grant Permissions</Text>
           </LinearGradient>
         </TouchableOpacity>
         <Text style={styles.manualModeNote}>
