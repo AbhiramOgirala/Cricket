@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  Dimensions, Modal, Alert, ScrollView, Vibration
+  Dimensions, Modal, Alert, ScrollView, Vibration, Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Camera, CameraView, useCameraPermissions } from 'expo-camera';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useDispatch, useSelector } from 'react-redux';
@@ -29,7 +29,6 @@ import ReviewModal from '../src/components/game/ReviewModal';
 import ReviewBar from '../src/components/game/ReviewBar';
 
 const { width, height } = Dimensions.get('window');
-// Camera takes up ~42% of screen height - big and clear
 const CAMERA_HEIGHT = height * 0.42;
 
 const SCORING_BUTTONS = [
@@ -47,7 +46,12 @@ const SCORING_BUTTONS = [
 
 export default function ScoringScreen() {
   const dispatch = useDispatch();
+
+  // ── Camera permission ─────────────────────────────────────────────────────
   const [permission, requestPermission] = useCameraPermissions();
+  // Extra manual flag so we can force-show camera after user grants
+  const [permissionGranted, setPermissionGranted] = useState(false);
+
   const cameraRef = useRef(null);
 
   const match = useSelector(selectMatch);
@@ -79,12 +83,56 @@ export default function ScoringScreen() {
   const battingTeam = match.battingTeamId === match.team1.id ? match.team1 : match.team2;
   const bowlingTeam = match.bowlingTeamId === match.team1.id ? match.team1 : match.team2;
 
-  // Request camera permission on mount
+  // ── Permission handling ───────────────────────────────────────────────────
+  // On mount: check if already granted (handles case where user granted before)
   useEffect(() => {
-    if (permission && !permission.granted && permission.canAskAgain) {
-      requestPermission();
+    (async () => {
+      try {
+        const { status } = await Camera.getCameraPermissionsAsync();
+        if (status === 'granted') {
+          setPermissionGranted(true);
+        } else if (status === 'undetermined') {
+          // Auto-request on first open
+          const result = await Camera.requestCameraPermissionsAsync();
+          if (result.status === 'granted') {
+            setPermissionGranted(true);
+          }
+        }
+      } catch (e) {
+        console.warn('Camera permission check failed:', e);
+      }
+    })();
+  }, []);
+
+  // Sync with hook-based permission state
+  useEffect(() => {
+    if (permission?.granted) {
+      setPermissionGranted(true);
     }
   }, [permission]);
+
+  const handleRequestPermission = async () => {
+    try {
+      const result = await requestPermission();
+      if (result?.granted) {
+        setPermissionGranted(true);
+      } else {
+        // Permission denied via hook - try the Camera API directly as fallback
+        const directResult = await Camera.requestCameraPermissionsAsync();
+        if (directResult.status === 'granted') {
+          setPermissionGranted(true);
+        } else {
+          Alert.alert(
+            'Camera Permission Required',
+            'Please enable camera access in your phone Settings → Apps → Gully Cricket → Permissions → Camera.',
+            [{ text: 'OK' }]
+          );
+        }
+      }
+    } catch (e) {
+      console.warn('Permission request error:', e);
+    }
+  };
 
   // Navigate to result when match complete
   useEffect(() => {
@@ -134,40 +182,43 @@ export default function ScoringScreen() {
   }, [pendingReview]);
 
   const startBallRecording = useCallback(() => {
-    if (!cameraRef.current || !permission?.granted) return;
+    if (!cameraRef.current || !permissionGranted) return;
     try {
       setIsRecording(true);
       ballTrajectoryRef.current = [];
       lbwDataRef.current = null;
-      recordingRef.current = cameraRef.current.record({ maxDuration: 8 });
+      recordingRef.current = cameraRef.current.recordAsync
+        ? cameraRef.current.recordAsync({ maxDuration: 8 })
+        : cameraRef.current.record({ maxDuration: 8 });
     } catch (e) {
+      console.warn('Recording start error:', e);
       setIsRecording(false);
     }
-  }, [permission]);
+  }, [permissionGranted]);
 
   const stopBallRecording = useCallback(async () => {
     if (!cameraRef.current || !isRecording) return null;
     try {
-      cameraRef.current.stopRecording();
+      if (cameraRef.current.stopRecording) {
+        cameraRef.current.stopRecording();
+      }
       setIsRecording(false);
       const result = await recordingRef.current;
       recordingRef.current = null;
       return result?.uri || null;
     } catch (e) {
+      console.warn('Recording stop error:', e);
       setIsRecording(false);
       return null;
     }
   }, [isRecording]);
 
   const simulateTrajectory = useCallback(() => {
-    // Simulate ball trajectory from bowling end to batsman
     const zones = detection.zones || computeAdaptiveZones(width, CAMERA_HEIGHT, detection.deviceTilt);
     const traj = [];
     const t0 = Date.now();
-    // Ball travels from top of frame (bowling end) to bottom (batsman)
     for (let i = 0; i < 24; i++) {
       const progress = i / 24;
-      // Slight horizontal drift (random per ball)
       const drift = (Math.random() - 0.5) * width * 0.25;
       traj.push({
         x: zones.pitchCenterX + drift * progress,
@@ -216,10 +267,8 @@ export default function ScoringScreen() {
       CAMERA_HEIGHT
     );
 
-    // Store LBW data for potential review
     lbwDataRef.current = analysisResult.lbwData;
 
-    // Wide alert
     if (analysisResult.wideDetected && outcome !== BALL_OUTCOMES.WIDE) {
       dispatch(addAlert({
         id: Date.now().toString(),
@@ -230,7 +279,6 @@ export default function ScoringScreen() {
       Vibration.vibrate([0, 200, 100, 200]);
     }
 
-    // No ball alert
     if ((analysisResult.noBallHeightDetected || analysisResult.noBallBounceDetected) &&
         outcome !== BALL_OUTCOMES.NO_BALL) {
       const reason = analysisResult.noBallBounceDetected
@@ -245,7 +293,6 @@ export default function ScoringScreen() {
       Vibration.vibrate([0, 300, 100, 300, 100, 300]);
     }
 
-    // LBW alert
     if (analysisResult.lbwPossible && outcome !== BALL_OUTCOMES.LBW && outcome !== BALL_OUTCOMES.WICKET) {
       dispatch(addAlert({
         id: Date.now().toString(),
@@ -270,17 +317,14 @@ export default function ScoringScreen() {
       lbwData: analysisResult.lbwData,
     }));
 
-    // Flash
     setLastBallFlash(outcome);
     setTimeout(() => setLastBallFlash(null), 800);
 
-    // New batsman prompt
     if (outcome === BALL_OUTCOMES.WICKET || outcome === BALL_OUTCOMES.LBW) {
       setPlayerModalFor('newBatsman');
       setShowPlayerModal(true);
     }
 
-    // Replay
     if (replayUri) {
       setTimeout(() => {
         Alert.alert(
@@ -335,6 +379,98 @@ export default function ScoringScreen() {
 
   const zones = detection.zones;
 
+  // ── Camera view renderer ──────────────────────────────────────────────────
+  const renderCamera = () => {
+    // Still loading permission status
+    if (permission === null) {
+      return (
+        <View style={styles.noCameraWrap}>
+          <Ionicons name="camera-outline" size={40} color={COLORS.text_muted} />
+          <Text style={styles.noCameraText}>Loading camera...</Text>
+        </View>
+      );
+    }
+
+    // Permission granted — show live feed
+    if (permissionGranted) {
+      return (
+        <CameraView
+          ref={cameraRef}
+          style={styles.camera}
+          facing="back"
+          mode="video"
+        >
+          {/* Auto-detection overlay zones */}
+          {zones && (
+            <>
+              <View style={[styles.overlayVLine, { left: zones.leftStumpX, borderColor: COLORS.secondary }]} />
+              <View style={[styles.overlayVLine, { left: zones.rightStumpX, borderColor: COLORS.secondary }]} />
+              <View style={[styles.overlayLine, { top: zones.shoulderY, borderColor: COLORS.warning }]} />
+              <View style={[styles.wideZone, { left: 0, width: Math.max(0, zones.leftStumpX - zones.wideThresholdPx * 0.3) }]} />
+              <View style={[styles.wideZone, { left: zones.rightStumpX + zones.wideThresholdPx * 0.3, right: 0 }]} />
+            </>
+          )}
+
+          {/* Detection chips */}
+          <View style={styles.detectionChips}>
+            <View style={[styles.chip, { backgroundColor: isRecording ? COLORS.danger_glow : COLORS.bg_card }]}>
+              <View style={[styles.recDot, { backgroundColor: isRecording ? COLORS.danger : COLORS.text_muted }]} />
+              <Text style={styles.chipText}>{isRecording ? 'REC' : 'STANDBY'}</Text>
+            </View>
+            <View style={[styles.chip, { backgroundColor: detection.wideDetected ? COLORS.warning_glow : COLORS.bg_card }]}>
+              <Text style={[styles.chipText, { color: detection.wideDetected ? COLORS.warning : COLORS.text_muted }]}>
+                WD {detection.wideDetected ? '⚠️' : '✓'}
+              </Text>
+            </View>
+            <View style={[styles.chip, {
+              backgroundColor: (detection.noBallHeightDetected || detection.noBallBounceDetected) ? COLORS.danger_glow : COLORS.bg_card
+            }]}>
+              <Text style={[styles.chipText, {
+                color: (detection.noBallHeightDetected || detection.noBallBounceDetected) ? COLORS.danger : COLORS.text_muted
+              }]}>
+                NB {(detection.noBallHeightDetected || detection.noBallBounceDetected) ? '🚨' : '✓'}
+              </Text>
+            </View>
+          </View>
+
+          {/* AUTO badge */}
+          <View style={styles.autoDetectBadge}>
+            <Ionicons name="eye" size={10} color={COLORS.primary} />
+            <Text style={styles.autoDetectText}>AUTO</Text>
+          </View>
+
+          {/* Bounce counter */}
+          <View style={styles.bounceChip}>
+            <Text style={styles.bounceChipText}>
+              Bounces: {bouncesInOver}/{CRICKET.MAX_BOUNCES_PER_OVER}
+              {bouncesInOver >= CRICKET.MAX_BOUNCES_PER_OVER ? ' 🚨' : ''}
+            </Text>
+          </View>
+        </CameraView>
+      );
+    }
+
+    // Permission denied or not yet requested
+    return (
+      <View style={styles.noCameraWrap}>
+        <Ionicons name="camera-outline" size={44} color={COLORS.primary} />
+        <Text style={styles.noCameraTitle}>Camera Access Needed</Text>
+        <Text style={styles.noCameraText}>
+          For auto wide, no-ball & LBW detection
+        </Text>
+        <TouchableOpacity style={styles.grantCameraBtn} onPress={handleRequestPermission}>
+          <LinearGradient colors={[COLORS.primary, COLORS.primary_dim]} style={styles.grantCameraBtnGrad}>
+            <Ionicons name="camera" size={16} color="#000" />
+            <Text style={styles.grantCameraBtnText}>Grant Camera Access</Text>
+          </LinearGradient>
+        </TouchableOpacity>
+        <Text style={styles.manualModeNote}>
+          Manual scoring works without camera
+        </Text>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.container}>
@@ -363,91 +499,9 @@ export default function ScoringScreen() {
           <AlertBanner key={alert.id} alert={alert} onDismiss={() => dispatch(clearAlerts())} />
         ))}
 
-        {/* ── LARGE CAMERA PREVIEW ── */}
+        {/* ── CAMERA ── */}
         <View style={styles.cameraContainer}>
-          {/* Permission not yet determined - loading */}
-          {!permission && (
-            <View style={styles.noCameraWrap}>
-              <Ionicons name="camera-outline" size={40} color={COLORS.text_muted} />
-              <Text style={styles.noCameraText}>Loading camera...</Text>
-            </View>
-          )}
-
-          {/* Permission denied - show grant button */}
-          {permission && !permission.granted && (
-            <View style={styles.noCameraWrap}>
-              <Ionicons name="camera-outline" size={44} color={COLORS.primary} />
-              <Text style={styles.noCameraTitle}>Camera Access Needed</Text>
-              <Text style={styles.noCameraText}>For auto wide, no-ball & LBW detection</Text>
-              {permission.canAskAgain ? (
-                <TouchableOpacity style={styles.grantCameraBtn} onPress={requestPermission}>
-                  <LinearGradient colors={[COLORS.primary, COLORS.primary_dim]} style={styles.grantCameraBtnGrad}>
-                    <Ionicons name="camera" size={16} color="#000" />
-                    <Text style={styles.grantCameraBtnText}>Grant Camera Access</Text>
-                  </LinearGradient>
-                </TouchableOpacity>
-              ) : (
-                <Text style={styles.noCameraSubtext}>Enable camera in phone Settings → App permissions</Text>
-              )}
-            </View>
-          )}
-
-          {/* Camera granted - show live feed */}
-          {permission?.granted && (
-            <CameraView ref={cameraRef} style={styles.camera} facing="back">
-              {/* Auto-detection overlay zones */}
-              {zones && (
-                <>
-                  <View style={[styles.overlayVLine, { left: zones.leftStumpX, borderColor: COLORS.secondary }]} />
-                  <View style={[styles.overlayVLine, { left: zones.rightStumpX, borderColor: COLORS.secondary }]} />
-                  <View style={[styles.overlayLine, { top: zones.shoulderY, borderColor: COLORS.warning }]} />
-                  <View style={[styles.wideZone, { left: 0, width: Math.max(0, zones.leftStumpX - zones.wideThresholdPx * 0.3) }]} />
-                  <View style={[styles.wideZone, { left: zones.rightStumpX + zones.wideThresholdPx * 0.3, right: 0 }]} />
-                </>
-              )}
-
-              {/* Detection chips */}
-              <View style={styles.detectionChips}>
-                <View style={[styles.chip, { backgroundColor: isRecording ? COLORS.danger_glow : COLORS.bg_card }]}>
-                  <View style={[styles.recDot, { backgroundColor: isRecording ? COLORS.danger : COLORS.text_muted }]} />
-                  <Text style={styles.chipText}>{isRecording ? 'REC' : 'STANDBY'}</Text>
-                </View>
-                <View style={[styles.chip, { backgroundColor: detection.wideDetected ? COLORS.warning_glow : COLORS.bg_card }]}>
-                  <Text style={[styles.chipText, { color: detection.wideDetected ? COLORS.warning : COLORS.text_muted }]}>
-                    WD {detection.wideDetected ? '⚠️' : '✓'}
-                  </Text>
-                </View>
-                <View style={[styles.chip, {
-                  backgroundColor: (detection.noBallHeightDetected || detection.noBallBounceDetected) ? COLORS.danger_glow : COLORS.bg_card
-                }]}>
-                  <Text style={[styles.chipText, {
-                    color: (detection.noBallHeightDetected || detection.noBallBounceDetected) ? COLORS.danger : COLORS.text_muted
-                  }]}>
-                    NB {(detection.noBallHeightDetected || detection.noBallBounceDetected) ? '🚨' : '✓'}
-                  </Text>
-                </View>
-                <View style={[styles.chip, { backgroundColor: detection.lbwPossible ? COLORS.lbw_glow : COLORS.bg_card }]}>
-                  <Text style={[styles.chipText, { color: detection.lbwPossible ? COLORS.lbw : COLORS.text_muted }]}>
-                    LBW {detection.lbwPossible ? '👆' : '✓'}
-                  </Text>
-                </View>
-              </View>
-
-              {/* Auto badge */}
-              <View style={styles.autoDetectBadge}>
-                <Ionicons name="eye" size={10} color={COLORS.primary} />
-                <Text style={styles.autoDetectText}>AUTO</Text>
-              </View>
-
-              {/* Bounce counter */}
-              <View style={styles.bounceChip}>
-                <Text style={styles.bounceChipText}>
-                  Bounces: {bouncesInOver}/{CRICKET.MAX_BOUNCES_PER_OVER}
-                  {bouncesInOver >= CRICKET.MAX_BOUNCES_PER_OVER ? ' 🚨' : ''}
-                </Text>
-              </View>
-            </CameraView>
-          )}
+          {renderCamera()}
         </View>
 
         {/* ── CURRENT PLAYERS ── */}
@@ -596,21 +650,33 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: COLORS.border,
   },
 
-  // ── CAMERA - BIG & CLEAR ──
+  // ── CAMERA ──
   cameraContainer: {
     height: CAMERA_HEIGHT,
     backgroundColor: '#000',
     borderBottomWidth: 2,
     borderBottomColor: COLORS.primary,
+    overflow: 'hidden',
   },
   camera: { flex: 1 },
   noCameraWrap: {
-    flex: 1, alignItems: 'center', justifyContent: 'center', gap: 10,
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
     backgroundColor: COLORS.bg_card,
+    padding: 20,
   },
   noCameraTitle: { fontSize: 15, fontWeight: '800', color: COLORS.text_primary },
-  noCameraText: { fontSize: 12, color: COLORS.text_muted, textAlign: 'center', paddingHorizontal: 20 },
-  noCameraSubtext: { fontSize: 11, color: COLORS.text_muted, textAlign: 'center', paddingHorizontal: 30, lineHeight: 18 },
+  noCameraText: {
+    fontSize: 12, color: COLORS.text_muted,
+    textAlign: 'center', paddingHorizontal: 20,
+  },
+  manualModeNote: {
+    fontSize: 11, color: COLORS.text_muted,
+    textAlign: 'center', marginTop: 6,
+    fontStyle: 'italic',
+  },
   grantCameraBtn: { marginTop: 4 },
   grantCameraBtnGrad: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
