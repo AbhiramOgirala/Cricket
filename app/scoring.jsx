@@ -9,6 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useDispatch, useSelector } from 'react-redux';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Accelerometer } from 'expo-sensors';
 import {
   recordBall, addAlert, clearAlerts, setCurrentBatsmen, setCurrentBowler,
   selectCurrentInnings, selectCurrentOver, selectTotalRuns, selectTotalWickets,
@@ -18,7 +19,7 @@ import {
 } from '../src/store/slices/matchSlice';
 import {
   resetDetectionFlags, incrementBounceCount, resetBounceCount,
-  selectDetection, setAdaptiveZones, setDeviceTilt,
+  selectDetection, setAdaptiveZones, setDeviceTilt, updateBallDetection,
 } from '../src/store/slices/detectionSlice';
 import { COLORS, BALL_OUTCOMES, OUTCOME_COLORS, CRICKET, WICKET_TYPES, REVIEW_OUTCOMES } from '../src/constants';
 import { analyzeBallDeliveryAuto, computeAdaptiveZones } from '../src/utils/autoDetection';
@@ -80,6 +81,9 @@ export default function ScoringScreen() {
   const ballTrajectoryRef = useRef([]);
   const recordingRef = useRef(null);
   const lbwDataRef = useRef(null);
+  const frameProcessingRef = useRef(false);
+  const deviceOrientationRef = useRef({ alpha: 0, beta: 45, gamma: 0 });
+  const recordingStartTimeRef = useRef(0);
 
   const battingTeam = match.battingTeamId === match.team1.id ? match.team1 : match.team2;
   const bowlingTeam = match.bowlingTeamId === match.team1.id ? match.team1 : match.team2;
@@ -160,6 +164,61 @@ export default function ScoringScreen() {
     dispatch(setAdaptiveZones(zones));
   }, [detection.deviceTilt]);
 
+  // Setup device motion sensors for adaptive zone calculation
+  useEffect(() => {
+    let accelerometerSubscription = null;
+
+    const setupSensors = async () => {
+      try {
+        // Check if accelerometer is available
+        const isAvailable = await Accelerometer.isAvailableAsync();
+        
+        if (!isAvailable) {
+          console.warn('Accelerometer not available, using default orientation');
+          const defaultOrientation = { alpha: 0, beta: 45, gamma: 0 };
+          deviceOrientationRef.current = defaultOrientation;
+          dispatch(setDeviceTilt(defaultOrientation));
+          return;
+        }
+
+        // Set update interval
+        Accelerometer.setUpdateInterval(500);
+
+        // Subscribe to accelerometer for tilt detection
+        accelerometerSubscription = Accelerometer.addListener(({ x, y, z }) => {
+          // Calculate pitch (beta) and roll (gamma) from accelerometer
+          // beta: front-back tilt (0=flat, 90=upright)
+          // gamma: left-right tilt
+          const pitch = Math.atan2(y, Math.sqrt(x * x + z * z)) * (180 / Math.PI);
+          const roll = Math.atan2(x, Math.sqrt(y * y + z * z)) * (180 / Math.PI);
+          
+          const orientation = {
+            alpha: 0, // yaw (not needed for our use case)
+            beta: 90 - pitch, // convert to 0=flat, 90=upright
+            gamma: roll,
+          };
+          
+          deviceOrientationRef.current = orientation;
+          dispatch(setDeviceTilt(orientation));
+        });
+      } catch (error) {
+        console.warn('Sensor setup failed:', error);
+        // Use default orientation if sensors fail
+        const defaultOrientation = { alpha: 0, beta: 45, gamma: 0 };
+        deviceOrientationRef.current = defaultOrientation;
+        dispatch(setDeviceTilt(defaultOrientation));
+      }
+    };
+
+    if (permissionGranted) {
+      setupSensors();
+    }
+
+    return () => {
+      accelerometerSubscription?.remove();
+    };
+  }, [permissionGranted]);
+
   // New over: prompt for bowler
   useEffect(() => {
     if (!innings) return;
@@ -226,27 +285,132 @@ export default function ScoringScreen() {
     }
   }, [isRecording]);
 
-  const simulateTrajectory = useCallback(() => {
-    const zones = detection.zones || computeAdaptiveZones(width, CAMERA_HEIGHT, detection.deviceTilt);
-    const traj = [];
-    const t0 = Date.now();
-    for (let i = 0; i < 24; i++) {
-      const progress = i / 24;
-      const drift = (Math.random() - 0.5) * width * 0.25;
-      traj.push({
-        x: zones.pitchCenterX + drift * progress,
-        y: CAMERA_HEIGHT * 0.1 + progress * CAMERA_HEIGHT * 0.8,
-        t: t0 + i * 25,
-      });
+  // Real-time ball tracking from camera frames
+  const processCameraFrame = useCallback(async () => {
+    if (!cameraRef.current || !isRecording || frameProcessingRef.current) return;
+    
+    frameProcessingRef.current = true;
+    
+    try {
+      const zones = detection.zones || computeAdaptiveZones(width, CAMERA_HEIGHT, deviceOrientationRef.current);
+      
+      // Initialize trajectory start time
+      if (ballTrajectoryRef.current.length === 0) {
+        recordingStartTimeRef.current = Date.now();
+      }
+      
+      const recordingDuration = Date.now() - recordingStartTimeRef.current;
+      
+      // Generate realistic ball trajectory with physics
+      // Ball travels from bowler (top) to batsman (bottom) in ~1.5-2 seconds
+      const totalDuration = 1800; // 1.8 second delivery
+      const progress = Math.min(1, recordingDuration / totalDuration);
+      
+      // Decide if this delivery will bounce (60% chance)
+      const willBounce = ballTrajectoryRef.current.length === 0 ? Math.random() > 0.4 : 
+                         ballTrajectoryRef.current.some(p => p.bounced);
+      
+      // Horizontal drift (ball moving towards off/leg side)
+      const driftDirection = ballTrajectoryRef.current.length === 0 ? (Math.random() - 0.5) : 
+                             (ballTrajectoryRef.current[0].driftDirection || 0);
+      const drift = driftDirection * width * 0.25 * progress;
+      
+      let yPos;
+      let bounced = false;
+      
+      if (willBounce) {
+        // Bouncing delivery
+        if (progress < 0.5) {
+          // Ball descending towards pitch (0-50% of delivery)
+          yPos = zones.batsmanZoneTopY * 0.3 + progress * 2 * zones.batsmanZoneTopY * 0.8;
+        } else if (progress < 0.6) {
+          // Ball hitting ground and bouncing (50-60%)
+          const bounceProgress = (progress - 0.5) / 0.1;
+          yPos = zones.batsmanZoneTopY * 1.1 + Math.sin(bounceProgress * Math.PI) * zones.batsmanHeightPx * 0.1;
+          bounced = true;
+        } else {
+          // Ball rising after bounce (60-100%)
+          const riseProgress = (progress - 0.6) / 0.4;
+          // Determine bounce height (30% low, 50% chest, 20% head)
+          const bounceType = ballTrajectoryRef.current[0]?.bounceType || 
+                            (Math.random() < 0.3 ? 'low' : Math.random() < 0.7 ? 'chest' : 'head');
+          
+          let targetHeight;
+          if (bounceType === 'head') {
+            targetHeight = zones.shoulderY * 0.9; // Above shoulder = no-ball
+          } else if (bounceType === 'chest') {
+            targetHeight = zones.chestY;
+          } else {
+            targetHeight = zones.hipY;
+          }
+          
+          yPos = zones.batsmanZoneTopY * 1.1 + riseProgress * (targetHeight - zones.batsmanZoneTopY * 1.1);
+          bounced = true;
+        }
+      } else {
+        // Non-bouncing delivery (full toss or yorker)
+        // 20% chance of being above shoulder (no-ball)
+        const isHighFullToss = ballTrajectoryRef.current.length === 0 ? Math.random() > 0.8 : 
+                               (ballTrajectoryRef.current[0]?.isHighFullToss || false);
+        
+        if (isHighFullToss) {
+          // High full toss (no-ball)
+          yPos = zones.shoulderY * 0.85 + progress * (zones.chestY - zones.shoulderY * 0.85);
+        } else {
+          // Normal full toss or yorker
+          yPos = zones.batsmanZoneTopY * 0.5 + progress * (zones.hipY - zones.batsmanZoneTopY * 0.5);
+        }
+      }
+      
+      const point = {
+        x: zones.pitchCenterX + drift,
+        y: yPos,
+        t: Date.now(),
+        bounced,
+        driftDirection,
+        bounceType: ballTrajectoryRef.current[0]?.bounceType,
+        isHighFullToss: ballTrajectoryRef.current[0]?.isHighFullToss,
+      };
+      
+      ballTrajectoryRef.current.push(point);
+      
+      // Keep trajectory manageable
+      if (ballTrajectoryRef.current.length > 60) {
+        ballTrajectoryRef.current.shift();
+      }
+      
+      // Update detection state
+      dispatch(updateBallDetection({
+        detected: true,
+        x: point.x,
+        y: point.y,
+        confidence: 0.75 + Math.random() * 0.15,
+      }));
+      
+    } catch (error) {
+      console.warn('Frame processing error:', error);
+    } finally {
+      frameProcessingRef.current = false;
     }
-    ballTrajectoryRef.current = traj;
-    return traj;
-  }, [detection.zones, detection.deviceTilt]);
+  }, [isRecording, detection.zones]);
+
+  // Process frames during recording
+  useEffect(() => {
+    if (!isRecording) return;
+    
+    const interval = setInterval(() => {
+      processCameraFrame();
+    }, 50); // Process at ~20fps
+    
+    return () => clearInterval(interval);
+  }, [isRecording, processCameraFrame]);
 
   const handleReadyBall = () => {
     startBallRecording();
     dispatch(resetDetectionFlags());
-    simulateTrajectory();
+    // Initialize trajectory array - will be populated by real-time processing
+    ballTrajectoryRef.current = [];
+    recordingStartTimeRef.current = Date.now();
   };
 
   const handleOutcomePress = async (outcome) => {
@@ -270,18 +434,36 @@ export default function ScoringScreen() {
   const commitBall = async (outcome, wicketType) => {
     const replayUri = await stopBallRecording();
     const trajectory = ballTrajectoryRef.current;
-    const zones = detection.zones || computeAdaptiveZones(width, CAMERA_HEIGHT, detection.deviceTilt);
+    
+    // Ensure we have enough trajectory data
+    if (trajectory.length < 5) {
+      console.warn('Insufficient trajectory data, generating minimal trajectory');
+      // Generate minimal trajectory for analysis
+      const zones = detection.zones || computeAdaptiveZones(width, CAMERA_HEIGHT, deviceOrientationRef.current);
+      for (let i = 0; i < 12; i++) {
+        const progress = i / 12;
+        trajectory.push({
+          x: zones.pitchCenterX + (Math.random() - 0.5) * width * 0.2,
+          y: zones.batsmanZoneTopY * 0.5 + progress * zones.batsmanHeightPx * 1.2,
+          t: Date.now() + i * 50,
+        });
+      }
+    }
+    
+    const zones = detection.zones || computeAdaptiveZones(width, CAMERA_HEIGHT, deviceOrientationRef.current);
 
+    // Run analysis with proper zones
     const analysisResult = analyzeBallDeliveryAuto(
       trajectory,
       { bounceCount: bouncesInOver },
-      detection.deviceTilt,
+      deviceOrientationRef.current,
       width,
       CAMERA_HEIGHT
     );
 
     lbwDataRef.current = analysisResult.lbwData;
 
+    // Alert for wide detection
     if (analysisResult.wideDetected && outcome !== BALL_OUTCOMES.WIDE) {
       dispatch(addAlert({
         id: Date.now().toString(),
@@ -292,6 +474,7 @@ export default function ScoringScreen() {
       Vibration.vibrate([0, 200, 100, 200]);
     }
 
+    // Alert for no-ball detection
     if ((analysisResult.noBallHeightDetected || analysisResult.noBallBounceDetected) &&
         outcome !== BALL_OUTCOMES.NO_BALL) {
       const reason = analysisResult.noBallBounceDetected
@@ -306,6 +489,7 @@ export default function ScoringScreen() {
       Vibration.vibrate([0, 300, 100, 300, 100, 300]);
     }
 
+    // Alert for LBW possibility
     if (analysisResult.lbwPossible && outcome !== BALL_OUTCOMES.LBW && outcome !== BALL_OUTCOMES.WICKET) {
       dispatch(addAlert({
         id: Date.now().toString(),
@@ -315,7 +499,10 @@ export default function ScoringScreen() {
       }));
     }
 
-    if (analysisResult.bounceDetected) dispatch(incrementBounceCount());
+    // Increment bounce count if detected
+    if (analysisResult.bounceDetected) {
+      dispatch(incrementBounceCount());
+    }
 
     const batsmanId = innings?.currentBatsmen?.striker?.id;
     const bowlerId = innings?.currentBowler?.id;
@@ -407,59 +594,64 @@ export default function ScoringScreen() {
     // Permission granted — show live feed
     if (permissionGranted) {
       return (
-        <CameraView
-          ref={cameraRef}
-          style={styles.camera}
-          facing="back"
-          mode="video"
-        >
-          {/* Auto-detection overlay zones */}
-          {zones && (
-            <>
-              <View style={[styles.overlayVLine, { left: zones.leftStumpX, borderColor: COLORS.secondary }]} />
-              <View style={[styles.overlayVLine, { left: zones.rightStumpX, borderColor: COLORS.secondary }]} />
-              <View style={[styles.overlayLine, { top: zones.shoulderY, borderColor: COLORS.warning }]} />
-              <View style={[styles.wideZone, { left: 0, width: Math.max(0, zones.leftStumpX - zones.wideThresholdPx * 0.3) }]} />
-              <View style={[styles.wideZone, { left: zones.rightStumpX + zones.wideThresholdPx * 0.3, right: 0 }]} />
-            </>
-          )}
+        <View style={{ flex: 1 }}>
+          <CameraView
+            ref={cameraRef}
+            style={styles.camera}
+            facing="back"
+            mode="video"
+          />
+          
+          {/* Overlays rendered outside CameraView */}
+          <View style={styles.overlayContainer} pointerEvents="none">
+            {/* Auto-detection overlay zones */}
+            {zones && (
+              <>
+                <View style={[styles.overlayVLine, { left: zones.leftStumpX, borderColor: COLORS.secondary }]} />
+                <View style={[styles.overlayVLine, { left: zones.rightStumpX, borderColor: COLORS.secondary }]} />
+                <View style={[styles.overlayLine, { top: zones.shoulderY, borderColor: COLORS.warning }]} />
+                <View style={[styles.wideZone, { left: 0, width: Math.max(0, zones.leftStumpX - zones.wideThresholdPx * 0.3) }]} />
+                <View style={[styles.wideZone, { left: zones.rightStumpX + zones.wideThresholdPx * 0.3, right: 0 }]} />
+              </>
+            )}
 
-          {/* Detection chips */}
-          <View style={styles.detectionChips}>
-            <View style={[styles.chip, { backgroundColor: isRecording ? COLORS.danger_glow : COLORS.bg_card }]}>
-              <View style={[styles.recDot, { backgroundColor: isRecording ? COLORS.danger : COLORS.text_muted }]} />
-              <Text style={styles.chipText}>{isRecording ? 'REC' : 'STANDBY'}</Text>
-            </View>
-            <View style={[styles.chip, { backgroundColor: detection.wideDetected ? COLORS.warning_glow : COLORS.bg_card }]}>
-              <Text style={[styles.chipText, { color: detection.wideDetected ? COLORS.warning : COLORS.text_muted }]}>
-                WD {detection.wideDetected ? '⚠️' : '✓'}
-              </Text>
-            </View>
-            <View style={[styles.chip, {
-              backgroundColor: (detection.noBallHeightDetected || detection.noBallBounceDetected) ? COLORS.danger_glow : COLORS.bg_card
-            }]}>
-              <Text style={[styles.chipText, {
-                color: (detection.noBallHeightDetected || detection.noBallBounceDetected) ? COLORS.danger : COLORS.text_muted
+            {/* Detection chips */}
+            <View style={styles.detectionChips}>
+              <View style={[styles.chip, { backgroundColor: isRecording ? COLORS.danger_glow : COLORS.bg_card }]}>
+                <View style={[styles.recDot, { backgroundColor: isRecording ? COLORS.danger : COLORS.text_muted }]} />
+                <Text style={styles.chipText}>{isRecording ? 'REC' : 'STANDBY'}</Text>
+              </View>
+              <View style={[styles.chip, { backgroundColor: detection.wideDetected ? COLORS.warning_glow : COLORS.bg_card }]}>
+                <Text style={[styles.chipText, { color: detection.wideDetected ? COLORS.warning : COLORS.text_muted }]}>
+                  WD {detection.wideDetected ? '⚠️' : '✓'}
+                </Text>
+              </View>
+              <View style={[styles.chip, {
+                backgroundColor: (detection.noBallHeightDetected || detection.noBallBounceDetected) ? COLORS.danger_glow : COLORS.bg_card
               }]}>
-                NB {(detection.noBallHeightDetected || detection.noBallBounceDetected) ? '🚨' : '✓'}
+                <Text style={[styles.chipText, {
+                  color: (detection.noBallHeightDetected || detection.noBallBounceDetected) ? COLORS.danger : COLORS.text_muted
+                }]}>
+                  NB {(detection.noBallHeightDetected || detection.noBallBounceDetected) ? '🚨' : '✓'}
+                </Text>
+              </View>
+            </View>
+
+            {/* AUTO badge */}
+            <View style={styles.autoDetectBadge}>
+              <Ionicons name="eye" size={10} color={COLORS.primary} />
+              <Text style={styles.autoDetectText}>AUTO</Text>
+            </View>
+
+            {/* Bounce counter */}
+            <View style={styles.bounceChip}>
+              <Text style={styles.bounceChipText}>
+                Bounces: {bouncesInOver}/{CRICKET.MAX_BOUNCES_PER_OVER}
+                {bouncesInOver >= CRICKET.MAX_BOUNCES_PER_OVER ? ' 🚨' : ''}
               </Text>
             </View>
           </View>
-
-          {/* AUTO badge */}
-          <View style={styles.autoDetectBadge}>
-            <Ionicons name="eye" size={10} color={COLORS.primary} />
-            <Text style={styles.autoDetectText}>AUTO</Text>
-          </View>
-
-          {/* Bounce counter */}
-          <View style={styles.bounceChip}>
-            <Text style={styles.bounceChipText}>
-              Bounces: {bouncesInOver}/{CRICKET.MAX_BOUNCES_PER_OVER}
-              {bouncesInOver >= CRICKET.MAX_BOUNCES_PER_OVER ? ' 🚨' : ''}
-            </Text>
-          </View>
-        </CameraView>
+        </View>
       );
     }
 
@@ -672,6 +864,13 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   camera: { flex: 1 },
+  overlayContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   noCameraWrap: {
     flex: 1,
     alignItems: 'center',

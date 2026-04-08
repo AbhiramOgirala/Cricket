@@ -122,15 +122,26 @@ export function detectBounceAuto(trajectory, zones) {
   let pitchIndex = -1;
   let pitchMaxY = 0;
 
-  for (let i = 2; i < trajectory.length - 2; i++) {
+  // Find the bounce point (local maximum in Y - ball hitting ground)
+  // Need at least 2 points before and after to confirm it's a local max
+  for (let i = 3; i < trajectory.length - 3; i++) {
+    const prev2 = trajectory[i - 2].y;
+    const prev1 = trajectory[i - 1].y;
     const curr = trajectory[i].y;
-    if (curr > trajectory[i - 1].y && curr > trajectory[i + 1].y && curr > pitchMaxY) {
+    const next1 = trajectory[i + 1].y;
+    const next2 = trajectory[i + 2].y;
+    
+    // Check if this is a clear local maximum (ball at ground level)
+    if (curr > prev2 && curr > prev1 && curr > next1 && curr > next2 && curr > pitchMaxY) {
       pitchMaxY = curr;
       pitchIndex = i;
     }
   }
 
-  if (pitchIndex === -1) return { detected: false };
+  if (pitchIndex === -1 || pitchMaxY < zones.frameHeight * 0.4) {
+    // No bounce detected or bounce too high up (not realistic)
+    return { detected: false };
+  }
 
   const afterPitch = trajectory.slice(pitchIndex);
   if (afterPitch.length < 3) return { detected: false };
@@ -186,21 +197,22 @@ export function detectLBW(trajectory, zones, batsmanX = null) {
 
   // 1. Find where ball pitched (local max Y = bounce point)
   let pitchPoint = null;
+  let maxY = 0;
   for (let i = 2; i < trajectory.length - 2; i++) {
     const curr = trajectory[i].y;
-    if (curr > trajectory[i - 1].y && curr > trajectory[i + 1].y) {
+    if (curr > trajectory[i - 1].y && curr > trajectory[i + 1].y && curr > maxY) {
+      maxY = curr;
       pitchPoint = trajectory[i];
-      break;
     }
   }
 
-  // If no clear pitch detected, use bottom-most point
+  // If no clear pitch detected, use the point closest to ground (highest Y value)
   if (!pitchPoint) {
     pitchPoint = trajectory.reduce((max, p) => (p.y > max.y ? p : max), trajectory[0]);
   }
 
   // 2. Check pitch in line (ball must not pitch outside leg stump)
-  const pitchInLine = pitchPoint.x >= lbwLeftBound && pitchPoint.x <= lbwRightBound + stumpTolerance * 2;
+  const pitchInLine = pitchPoint.x >= lbwLeftBound;
   const pitchedOutsideLeg = pitchPoint.x < lbwLeftBound;
 
   if (pitchedOutsideLeg) {
@@ -214,8 +226,7 @@ export function detectLBW(trajectory, zones, batsmanX = null) {
     };
   }
 
-  // 3. Find impact point (where ball stopped its forward trajectory - approximated)
-  // Look for ball in the knee-hip zone (pad impact region)
+  // 3. Find impact point (where ball is in the pad zone - knee to hip region)
   const padImpactPoints = trajectory.filter(
     (p) => p.y >= kneeY * 0.85 && p.y <= hipY * 1.15
   );
@@ -227,14 +238,21 @@ export function detectLBW(trajectory, zones, batsmanX = null) {
   const impactInLine = impactPoint.x >= lbwLeftBound && impactPoint.x <= lbwRightBound;
 
   // 4. Project trajectory to stump height to see if it would hit
-  // Use last few trajectory points to determine direction
-  const last4 = trajectory.slice(-4);
-  const trajectoryDX = last4.length > 1
-    ? (last4[last4.length - 1].x - last4[0].x) / last4.length
-    : 0;
-  const trajectoryDY = last4.length > 1
-    ? (last4[last4.length - 1].y - last4[0].y) / last4.length
-    : 0;
+  // Use last 4-6 trajectory points to determine direction
+  const last6 = trajectory.slice(-Math.min(6, trajectory.length));
+  if (last6.length < 2) {
+    return {
+      possible: false,
+      confidence: 0,
+      reason: 'Insufficient trajectory for projection',
+      pitchInLine,
+      impactInLine,
+      wouldHitStumps: false,
+    };
+  }
+  
+  const trajectoryDX = (last6[last6.length - 1].x - last6[0].x) / last6.length;
+  const trajectoryDY = (last6[last6.length - 1].y - last6[0].y) / last6.length;
 
   // Project to stump base Y (near feetY)
   const stumpY = feetY * 0.88; // stumps are at ~88% frame height
