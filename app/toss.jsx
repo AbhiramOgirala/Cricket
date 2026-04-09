@@ -30,10 +30,11 @@ const CoinSide = ({ type, size = 120 }) => {
 export default function TossScreen() {
   const dispatch = useDispatch();
   const params = useLocalSearchParams();
-  const team1 = JSON.parse(params.team1);
-  const team2 = JSON.parse(params.team2);
-  const totalOvers = parseInt(params.totalOvers);
-  const matchName = params.matchName;
+  const getStringParam = (param) => Array.isArray(param) ? param[0] : param;
+  const team1 = params.team1 ? JSON.parse(getStringParam(params.team1)) : null;
+  const team2 = params.team2 ? JSON.parse(getStringParam(params.team2)) : null;
+  const totalOvers = parseInt(getStringParam(params.totalOvers) || '6');
+  const matchName = getStringParam(params.matchName) || '';
 
   const [phase, setPhase] = useState('choose'); // 'choose' | 'flip' | 'land' | 'decide'
   const [callingTeam, setCallingTeam] = useState(null);
@@ -141,9 +142,9 @@ export default function TossScreen() {
 
   const won = tossResult === tossCall;
   const coinLabel = tossResult === 'heads' ? '👑 HEADS' : '🏏 TAILS';
-  const coinColor = tossResult === 'heads'
+  const coinColor = (tossResult === 'heads'
     ? ['#ffd700', '#b8860b', '#ffd700']
-    : ['#e8c96d', '#c8a84b', '#e8c96d'];
+    : ['#e8c96d', '#c8a84b', '#e8c96d']);
 
   return (
     <SafeAreaView style={styles.safe}>

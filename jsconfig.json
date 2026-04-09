@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "jsx": "react-native",
+    "moduleResolution": "node"
+  },
+  "include": ["app/**/*", "src/**/*"]
+}

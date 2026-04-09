@@ -4,7 +4,7 @@ import {
   Dimensions, Modal, Alert, ScrollView, Vibration, Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Camera, CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
+import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useDispatch, useSelector } from 'react-redux';
@@ -84,6 +84,7 @@ export default function ScoringScreen() {
   const frameProcessingRef = useRef(false);
   const deviceOrientationRef = useRef({ alpha: 0, beta: 45, gamma: 0 });
   const recordingStartTimeRef = useRef(0);
+  const deliveryTypeRef = useRef(null);
 
   const battingTeam = match.battingTeamId === match.team1.id ? match.team1 : match.team2;
   const bowlingTeam = match.bowlingTeamId === match.team1.id ? match.team1 : match.team2;
@@ -91,27 +92,18 @@ export default function ScoringScreen() {
   // ── Permission handling ───────────────────────────────────────────────────
   // On mount: check if already granted (handles case where user granted before)
   useEffect(() => {
-    (async () => {
-      try {
-        const cameraStatus = await Camera.getCameraPermissionsAsync();
-        const audioStatus = await Camera.getMicrophonePermissionsAsync();
-        
-        if (cameraStatus.status === 'granted' && audioStatus.status === 'granted') {
+    if (permission?.granted && audioPermission?.granted) {
+      setPermissionGranted(true);
+    } else if (permission?.status === 'undetermined' || audioPermission?.status === 'undetermined') {
+      (async () => {
+        const cameraResult = await requestPermission();
+        const audioResult = await requestAudioPermission();
+        if (cameraResult?.granted && audioResult?.granted) {
           setPermissionGranted(true);
-        } else if (cameraStatus.status === 'undetermined' || audioStatus.status === 'undetermined') {
-          // Auto-request on first open
-          const cameraResult = await Camera.requestCameraPermissionsAsync();
-          const audioResult = await Camera.requestMicrophonePermissionsAsync();
-          
-          if (cameraResult.status === 'granted' && audioResult.status === 'granted') {
-            setPermissionGranted(true);
-          }
         }
-      } catch (e) {
-        console.warn('Permission check failed:', e);
-      }
-    })();
-  }, []);
+      })();
+    }
+  }, [permission, audioPermission, requestPermission, requestAudioPermission]);
 
   // Sync with hook-based permission state
   useEffect(() => {
@@ -128,23 +120,15 @@ export default function ScoringScreen() {
       if (cameraResult?.granted && audioResult?.granted) {
         setPermissionGranted(true);
       } else {
-        // Permission denied via hook - try the Camera API directly as fallback
-        const directCameraResult = await Camera.requestCameraPermissionsAsync();
-        const directAudioResult = await Camera.requestMicrophonePermissionsAsync();
+        const missingPerms = [];
+        if (!cameraResult?.granted) missingPerms.push('Camera');
+        if (!audioResult?.granted) missingPerms.push('Microphone');
         
-        if (directCameraResult.status === 'granted' && directAudioResult.status === 'granted') {
-          setPermissionGranted(true);
-        } else {
-          const missingPerms = [];
-          if (directCameraResult.status !== 'granted') missingPerms.push('Camera');
-          if (directAudioResult.status !== 'granted') missingPerms.push('Microphone');
-          
-          Alert.alert(
-            'Permissions Required',
-            `Please enable ${missingPerms.join(' and ')} access in your phone Settings → Apps → Gully Cricket → Permissions.`,
-            [{ text: 'OK' }]
-          );
-        }
+        Alert.alert(
+          'Permissions Required',
+          `Please enable ${missingPerms.join(' and ')} access in your phone Settings → Apps → Gully Cricket → Permissions.`,
+          [{ text: 'OK' }]
+        );
       }
     } catch (e) {
       console.warn('Permission request error:', e);
@@ -277,7 +261,11 @@ export default function ScoringScreen() {
       setIsRecording(false);
       const result = await recordingRef.current;
       recordingRef.current = null;
-      return result?.uri || null;
+      let uri = result?.uri || null;
+      if (uri && !uri.startsWith('file://')) {
+        uri = `file://${uri}`;
+      }
+      return uri;
     } catch (e) {
       console.warn('Recording stop error:', e);
       setIsRecording(false);
@@ -320,17 +308,17 @@ export default function ScoringScreen() {
         
         // Initialize delivery characteristics on first frame
         if (ballTrajectoryRef.current.length === 0) {
-          ballTrajectoryRef.current.deliveryType = {
-            willBounce: Math.random() > 0.35, // 65% bounce
-            driftDirection: (Math.random() - 0.5) * 0.8, // -0.4 to +0.4
-            bounceType: Math.random() < 0.25 ? 'low' : Math.random() < 0.70 ? 'chest' : 'head',
-            isHighFullToss: Math.random() > 0.85, // 15% high full toss
-            isWide: Math.random() > 0.88, // 12% wide
-            wideSide: Math.random() > 0.5 ? 'off' : 'leg',
+          deliveryTypeRef.current = {
+            willBounce: true, // Always bounce for standard fallback
+            driftDirection: (Math.random() - 0.5) * 0.2, // Very slight drift
+            bounceType: 'waist', // Standard waist height
+            isHighFullToss: false, // Never randomly high full toss
+            isWide: false, // Never randomly wide
+            wideSide: 'off',
           };
         }
         
-        const delivery = ballTrajectoryRef.current.deliveryType;
+        const delivery = deliveryTypeRef.current;
         
         // Calculate ball position based on delivery type
         let xPos = zones.pitchCenterX;
@@ -469,7 +457,13 @@ export default function ScoringScreen() {
   };
 
   const commitBall = async (outcome, wicketType) => {
-    const replayUri = await stopBallRecording();
+    let replayUri = await stopBallRecording();
+    const recordingDurationMillis = Date.now() - recordingStartTimeRef.current;
+    
+    // If the video is too short (e.g. scored instantly), it will just be a blank 0-second file.
+    if (recordingDurationMillis < 1500) {
+      replayUri = null;
+    }
     const trajectory = ballTrajectoryRef.current;
     
     // Ensure we have enough trajectory data
@@ -480,8 +474,8 @@ export default function ScoringScreen() {
       for (let i = 0; i < 12; i++) {
         const progress = i / 12;
         trajectory.push({
-          x: zones.pitchCenterX + (Math.random() - 0.5) * width * 0.2,
-          y: zones.batsmanZoneTopY * 0.5 + progress * zones.batsmanHeightPx * 1.2,
+          x: zones.pitchCenterX,
+          y: (zones.batsmanZoneTopY + zones.batsmanHeightPx * 0.4) + progress * zones.batsmanHeightPx * 0.6,
           t: Date.now() + i * 50,
         });
       }
@@ -500,25 +494,16 @@ export default function ScoringScreen() {
 
     lbwDataRef.current = analysisResult.lbwData;
 
-    // Alert for wide detection
-    if (analysisResult.wideDetected && outcome !== BALL_OUTCOMES.WIDE) {
-      dispatch(addAlert({
-        id: Date.now().toString(),
-        type: 'wide_detected',
-        message: `⚠️ Wide detected (${Math.round(analysisResult.wideConfidence * 100)}% confidence) — ${analysisResult.wideSide} side`,
-        severity: 'warning',
-      }));
-      Vibration.vibrate([0, 200, 100, 200]);
-    }
-
-    // Alert for no-ball detection
+    // Alert for no-ball detection First
+    let isNoBall = false;
     if ((analysisResult.noBallHeightDetected || analysisResult.noBallBounceDetected) &&
         outcome !== BALL_OUTCOMES.NO_BALL) {
+      isNoBall = true;
       const reason = analysisResult.noBallBounceDetected
         ? `Short-pitch ball #${bouncesInOver + 1} in this over!`
         : 'Ball exceeded batsman shoulder height!';
       dispatch(addAlert({
-        id: Date.now().toString(),
+        id: Date.now().toString() + '-noball',
         type: 'no_ball_detected',
         message: `🚨 NO BALL! ${reason}`,
         severity: 'danger',
@@ -526,10 +511,21 @@ export default function ScoringScreen() {
       Vibration.vibrate([0, 300, 100, 300, 100, 300]);
     }
 
+    // Alert for wide detection (Only if not a no-ball)
+    if (!isNoBall && analysisResult.wideDetected && outcome !== BALL_OUTCOMES.WIDE) {
+      dispatch(addAlert({
+        id: Date.now().toString() + '-wide',
+        type: 'wide_detected',
+        message: `⚠️ Wide detected (${Math.round(analysisResult.wideConfidence * 100)}% confidence) — ${analysisResult.wideSide} side`,
+        severity: 'warning',
+      }));
+      Vibration.vibrate([0, 200, 100, 200]);
+    }
+
     // Alert for LBW possibility
     if (analysisResult.lbwPossible && outcome !== BALL_OUTCOMES.LBW && outcome !== BALL_OUTCOMES.WICKET) {
       dispatch(addAlert({
-        id: Date.now().toString(),
+        id: Date.now().toString() + '-lbw',
         type: 'lbw_possible',
         message: `👆 LBW possible! Confidence: ${Math.round((analysisResult.lbwData?.confidence || 0) * 100)}%`,
         severity: 'info',
