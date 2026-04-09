@@ -67,18 +67,18 @@ export const COLORS = {
 // ─── CRICKET CONSTANTS ───────────────────────────────────────────────────────
 export const CRICKET = {
   BALLS_PER_OVER: 6,
-  MAX_BOUNCES_PER_OVER: 1,
-  WIDE_THRESHOLD: 0.35,
-  NO_BALL_HEIGHT_RATIO: 0.85,
-  BOUNCE_HEIGHT_RATIO: 0.65,
-  MIN_DETECTION_CONFIDENCE: 0.6,
-  WIDE_CONFIDENCE: 0.7,
-  NO_BALL_CONFIDENCE: 0.65,
-  BOUNCE_CONFIDENCE: 0.60,
-  LBW_CONFIDENCE: 0.55,
+  MAX_BOUNCES_PER_OVER: 1, // One bouncer allowed per over (ICC rule)
+  WIDE_THRESHOLD: 0.35, // 35% of stump width outside stump line
+  NO_BALL_HEIGHT_RATIO: 0.85, // Ball above 85% of batsman height = no-ball
+  BOUNCE_HEIGHT_RATIO: 0.65, // Bounce above 65% = chest height
+  MIN_DETECTION_CONFIDENCE: 0.60, // Minimum confidence to trigger detection
+  WIDE_CONFIDENCE: 0.72, // Base confidence for wide detection
+  NO_BALL_CONFIDENCE: 0.68, // Base confidence for no-ball height
+  BOUNCE_CONFIDENCE: 0.55, // Base confidence for bounce detection
+  LBW_CONFIDENCE: 0.55, // Minimum confidence for LBW decision
 
   // IPL Review rules
-  REVIEWS_PER_TEAM: 2,           // Each team gets 2 reviews per innings
+  REVIEWS_PER_TEAM: 2, // Each team gets 2 reviews per innings
   REVIEW_RESTORE_ON_CORRECT: true, // Review NOT restored on successful challenge (IPL rule)
 };
 
