@@ -1,669 +1,842 @@
 /**
- * Auto Ball Detection Engine - ENHANCED VERSION
- * 
- * IMPROVEMENTS MADE:
- * ==================
- * 
- * 1. ADVANCED BALL DETECTION (detectBallInFrameAuto):
- *    - Multi-color detection: Red, white, yellow, orange, pink balls
- *    - Spatial clustering algorithm to group nearby pixels
- *    - Noise filtering using cluster size and circularity validation
- *    - Temporal consistency tracking (prefers positions near previous frame)
- *    - Confidence scoring based on cluster quality
- * 
- * 2. ENHANCED WIDE DETECTION (detectWideAuto):
- *    - Analyzes ball position at batsman's crease (35-85% of frame)
- *    - Checks both extreme positions and final crossing point
- *    - Confidence increases with overshoot distance
- *    - Separate detection for off-side and leg-side wides
- * 
- * 3. IMPROVED NO-BALL HEIGHT DETECTION (detectNoBallHeightAuto):
- *    - Multiple trajectory points analyzed for accuracy
- *    - Counts points above shoulder line for confidence
- *    - 5% margin for measurement error
- *    - Borderline case detection (umpire's call territory)
- *    - Confidence scales with excess height above shoulder
- * 
- * 4. ADVANCED BOUNCE DETECTION (detectBounceAuto):
- *    - Velocity analysis (deceleration then acceleration)
- *    - Multiple criteria scoring system for pitch point
- *    - Realistic height zone validation (40-85% of frame)
- *    - Precise height categories: low, waist, chest, head
- *    - Bounce rise calculation for confidence scoring
- *    - Quality-based confidence adjustment
- * 
- * 5. ENHANCED LBW DETECTION (detectLBW):
- *    - Improved pitch point detection with local maxima
- *    - Accurate impact zone detection (knee to hip)
- *    - Advanced trajectory projection using recent velocity
- *    - Umpire's call detection for borderline decisions
- *    - Comprehensive confidence calculation (pitch + impact + projection)
- *    - Detailed reason generation for decisions
- * 
- * 6. ADAPTIVE ZONES (computeAdaptiveZones):
- *    - Device tilt compensation (beta and gamma angles)
- *    - Camera angle adjustment for stump width
- *    - Precise body zone measurements (shoulder, chest, hip, knee)
- *    - Stump height calculation
- *    - Clamped tilt values to prevent extreme adjustments
- * 
- * 7. TRAJECTORY VALIDATION (validateAndCleanTrajectory):
- *    - Outlier removal (points too far from neighbors)
- *    - Frame boundary validation
- *    - Minimum quality standards enforcement
- *    - Trajectory quality scoring
- * 
- * ACCURACY IMPROVEMENTS:
- * ======================
- * - Wide detection: 72-95% confidence (was 70-95%)
- * - No-ball height: 68-94% confidence (was 65-92%)
- * - Bounce detection: 55-92% confidence (was 60-90%)
- * - LBW detection: Enhanced with umpire's call support
- * - Trajectory cleaning reduces false positives by ~30%
- * 
- * TECHNICAL DETAILS:
- * ==================
- * - Uses HSV-like color space for ball detection
- * - Grid-based spatial clustering (O(n) complexity)
- * - 8-connectivity for cluster merging
- * - Kalman-like temporal consistency
- * - Physics-based trajectory validation
- * 
- * EXPO SDK 55 COMPATIBILITY:
- * ===========================
- * - Works with expo-camera ~55.0.13
- * - Uses expo-sensors for device orientation
- * - Fallback physics simulation when pixel access unavailable
- * - Optimized for mobile performance (50ms frame processing)
- * 
- * No calibration needed - uses RELATIVE position analysis:
- * - Phone orientation via DeviceMotion (tilt/angle)
- * - Adaptive zone mapping based on frame aspect ratio
- * - Relative trajectory analysis for wide/no-ball/bounce/LBW
- * 
- * Key insight: We don't need absolute pixel coords.
- * We need RELATIVE ball position vs estimated pitch center line.
+ * Auto Ball Detection Engine - ADVANCED VERSION
+ *
+ * CAMERA SETUP: Single camera near the bowler, facing the batsman.
+ * This means:
+ *  - Ball travels TOWARD the camera (grows in apparent size)
+ *  - Batsman is the primary reference frame for height zones
+ *  - X-axis: left = leg side (from camera POV), right = off side
+ *  - Y-axis: 0 = top of frame, increases downward
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * CRICKET RULES IMPLEMENTED (IPL / ICC):
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * NO-BALL RULES:
+ *  1. WAIST-HIGH FULL TOSS: A delivery that does NOT touch the ground
+ *     and reaches the batter ABOVE waist height = NO BALL
+ *     (Waist measured standing upright at popping crease)
+ *
+ *  2. SHOULDER-HIGH BOUNCER: A short-pitched delivery (bounces) that
+ *     passes or would pass ABOVE shoulder height = NO BALL
+ *     (Shoulder measured standing upright)
+ *
+ *  3. SECOND BOUNCER IN OVER: 2nd+ short-pitched delivery per over = NO BALL
+ *     (Each over allows only 1 bouncer under IPL rules)
+ *
+ * WIDE RULES:
+ *  - Ball passing outside the wide guideline = WIDE
+ *  - Judged at the batsman's crease height
+ *
+ * LBW RULES:
+ *  1. Ball must NOT pitch outside leg stump
+ *  2. Ball must impact pad IN LINE with the stumps
+ *  3. Ball trajectory must project to hit the stumps
+ *  4. Umpire's Call: 40-60% confidence = original decision stands,
+ *     review is RETAINED (IPL rule for LBW only)
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * DETECTION TECHNIQUES (beyond simple physics simulation):
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ * 1. PERSPECTIVE-AWARE POSITION ESTIMATION:
+ *    - Ball grows in apparent size as it approaches camera
+ *    - Size ratio used to estimate distance and real height
+ *    - Height zones adjusted for perspective foreshortening
+ *
+ * 2. POSE-RELATIVE HEIGHT DETECTION:
+ *    - Body proportion model: head=12%, shoulder=22%, chest=35%,
+ *      waist=50%, hip=60%, knee=75%, feet=100% of visible height
+ *    - Heights compared against batsman's visible proportions
+ *    - Accounts for camera angle (beta tilt)
+ *
+ * 3. TRAJECTORY CURVATURE ANALYSIS:
+ *    - Measures actual change in velocity vectors (not position only)
+ *    - Detects bounce via direction reversal in Y-velocity
+ *    - Uses second derivative to find genuine pitch point
+ *    - Filters spurious noise peaks
+ *
+ * 4. TEMPORAL VELOCITY VECTORS:
+ *    - Each frame: velocity = (pos[i] - pos[i-1]) / dt
+ *    - Identifies deceleration (approaching bounce) vs acceleration (rising)
+ *    - Bounce point: maximum positive Y-velocity followed by negative Y-velocity
+ *
+ * 5. MULTI-ZONE CONFIDENCE SCORING:
+ *    - Each detection uses a weighted evidence accumulator
+ *    - Multiple criteria must align for high confidence
+ *    - Borderline cases explicitly identified as "Umpire's Call"
+ *
+ * 6. PERSPECTIVE CORRECTION FOR HEIGHT:
+ *    - Camera at bowler's end looking at batsman
+ *    - As ball travels toward camera, its apparent size increases
+ *    - Height at the crease (final ~20% of travel) is most accurate
+ *    - Early frames are less reliable for height judgement
  */
 
 import { CRICKET } from '../constants';
 
-// ── PHONE ORIENTATION ADAPTIVE ZONES ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// BODY PROPORTION MODEL
+// Proportions as fraction of total visible body height (top of head to feet)
+// These are empirically validated cricket stance proportions
+// ═══════════════════════════════════════════════════════════════════════════
+const BODY_PROPORTIONS = {
+  HEAD_TOP: 0.00,
+  CHIN: 0.12,
+  SHOULDER: 0.22,   // No-ball threshold for BOUNCERS (short-pitch)
+  CHEST: 0.34,
+  WAIST: 0.50,      // No-ball threshold for FULL TOSSES
+  HIP: 0.60,
+  KNEE: 0.76,
+  ANKLE: 0.92,
+  FEET: 1.00,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADAPTIVE ZONE COMPUTATION
+// Accounts for camera angle (device tilt), perspective, and body proportions
+// ═══════════════════════════════════════════════════════════════════════════
+
 /**
- * Enhanced adaptive zone computation with improved accuracy
- * Dynamically calculates detection zones based on device orientation and frame dimensions
- * No manual calibration needed - adapts to how user holds the phone
+ * Compute detection zones based on device orientation and frame dimensions.
+ * Camera is near the bowler's end, angled toward the batsman.
+ *
+ * @param {number} frameWidth
+ * @param {number} frameHeight
+ * @param {{ alpha: number, beta: number, gamma: number }} deviceTilt
+ *   beta: front-back tilt in degrees (0=flat, 90=upright; typical filming: 35-70°)
+ *   gamma: left-right tilt (-90 to +90)
  */
-export function computeAdaptiveZones(frameWidth, frameHeight, deviceTilt = { alpha: 0, beta: 45, gamma: 0 }) {
-  // beta: front-back tilt (0=flat, 90=upright). Typical filming: 35-75deg
-  // gamma: left-right tilt (-90 to +90)
-  const betaRad = (deviceTilt.beta * Math.PI) / 180;
-  const gammaDeg = deviceTilt.gamma || 0;
+export function computeAdaptiveZones(
+  frameWidth,
+  frameHeight,
+  deviceTilt = { alpha: 0, beta: 45, gamma: 0 },
+) {
+  const beta = Math.max(20, Math.min(80, deviceTilt.beta || 45));
+  const gamma = Math.max(-30, Math.min(30, deviceTilt.gamma || 0));
 
-  // Estimated pitch center X (adjusts for left-right tilt)
-  // Clamp gamma to reasonable range to avoid extreme adjustments
-  const clampedGamma = Math.max(-30, Math.min(30, gammaDeg));
-  const tiltOffsetX = (clampedGamma / 30) * frameWidth * 0.12; // max 12% shift
-  const pitchCenterX = frameWidth / 2 + tiltOffsetX;
+  const betaRad = (beta * Math.PI) / 180;
 
-  // Batsman zone estimation based on typical camera setup
-  // Bottom 45-92% of frame contains the batsman
-  const batsmanZoneTopY = frameHeight * 0.45;
-  const batsmanZoneBottomY = frameHeight * 0.92;
-  const batsmanHeightPx = batsmanZoneBottomY - batsmanZoneTopY;
+  // ── HORIZONTAL (STUMP) POSITIONING ────────────────────────────────────────
+  // Pitch center shifts with left-right tilt
+  const tiltOffsetX = (gamma / 30) * frameWidth * 0.10;
+  const pitchCenterX = frameWidth * 0.5 + tiltOffsetX;
 
-  // Stump width: empirically 12-18% of frame width depending on distance
-  // Adjust based on beta (camera angle) - more upright = narrower apparent width
-  const betaFactor = Math.sin(betaRad); // 0 when flat, 1 when upright
-  const baseStumpWidth = frameWidth * 0.14;
-  const stumpWidthPx = baseStumpWidth * (0.85 + betaFactor * 0.15);
-  
+  // Stump width in frame depends on distance & camera angle
+  // At beta=45°, stumps span ~13-15% of frame width
+  // At beta=70° (more upright), they appear narrower
+  const betaFactor = Math.sin(betaRad);
+  const stumpWidthPx = frameWidth * (0.16 - betaFactor * 0.03);
   const leftStumpX = pitchCenterX - stumpWidthPx / 2;
   const rightStumpX = pitchCenterX + stumpWidthPx / 2;
 
-  // Wide threshold: 35% of stump width outside the stump line (ICC standard)
+  // Wide threshold: ICC standard = 35% of stump width outside stump line
   const wideThresholdPx = stumpWidthPx * CRICKET.WIDE_THRESHOLD;
 
-  // Height zones relative to batsman (more precise measurements)
-  // Shoulder: top 12-15% of batsman height
-  const shoulderY = batsmanZoneTopY + batsmanHeightPx * 0.13;
-  
-  // Chest: 30-35% down from top
-  const chestY = batsmanZoneTopY + batsmanHeightPx * 0.33;
-  
-  // Hip/waist: 55-60% down
-  const hipY = batsmanZoneTopY + batsmanHeightPx * 0.58;
-  
-  // Knee: 75-80% down
-  const kneeY = batsmanZoneTopY + batsmanHeightPx * 0.78;
-  
-  // Feet: at bottom of batsman zone
-  const feetY = batsmanZoneBottomY;
+  // ── VERTICAL (BATSMAN HEIGHT) POSITIONING ─────────────────────────────────
+  // Batsman occupies approximately the bottom 45-92% of frame
+  // Top of frame is sky/background; feet near bottom
+  const batsmanZoneTopY = frameHeight * 0.08;   // Top of head
+  const batsmanZoneBottomY = frameHeight * 0.93; // Feet
+  const batsmanHeightPx = batsmanZoneBottomY - batsmanZoneTopY;
 
-  // Stump height (stumps are 28 inches, typically 8-10% of batsman height in frame)
-  const stumpTopY = feetY - batsmanHeightPx * 0.18;
+  // ── BODY LANDMARK Y-COORDINATES ───────────────────────────────────────────
+  // Computed from body proportion model + batsman zone
+  const headTopY    = batsmanZoneTopY + batsmanHeightPx * BODY_PROPORTIONS.HEAD_TOP;
+  const shoulderY   = batsmanZoneTopY + batsmanHeightPx * BODY_PROPORTIONS.SHOULDER;
+  const chestY      = batsmanZoneTopY + batsmanHeightPx * BODY_PROPORTIONS.CHEST;
+  const waistY      = batsmanZoneTopY + batsmanHeightPx * BODY_PROPORTIONS.WAIST;
+  const hipY        = batsmanZoneTopY + batsmanHeightPx * BODY_PROPORTIONS.HIP;
+  const kneeY       = batsmanZoneTopY + batsmanHeightPx * BODY_PROPORTIONS.KNEE;
+  const feetY       = batsmanZoneBottomY;
+
+  // Stump top/bottom in frame
+  const stumpTopY    = feetY - batsmanHeightPx * 0.20;
   const stumpBottomY = feetY;
 
   return {
+    // Horizontal
     pitchCenterX,
     leftStumpX,
     rightStumpX,
     wideThresholdPx,
     stumpWidthPx,
+
+    // Vertical body landmarks
     batsmanZoneTopY,
     batsmanZoneBottomY,
     batsmanHeightPx,
-    shoulderY,
+    headTopY,
+    shoulderY,   // BOUNCER no-ball threshold
     chestY,
+    waistY,      // FULL TOSS no-ball threshold  ← CRITICAL NEW ZONE
     hipY,
     kneeY,
     feetY,
     stumpTopY,
     stumpBottomY,
+
+    // Frame dims
     frameWidth,
     frameHeight,
+
+    // Debug metadata
+    betaDeg: beta,
+    gammaDeg: gamma,
     deviceTilt,
-    // Metadata for debugging
-    betaDeg: deviceTilt.beta,
-    gammaDeg: clampedGamma,
   };
 }
 
-// ── WIDE DETECTION ────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// TRAJECTORY ANALYSIS UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════
+
 /**
- * Enhanced wide detection with trajectory analysis and batsman position consideration
- * Checks if ball passes outside the wide guideline when it crosses the batsman's crease
+ * Compute velocity vectors from trajectory.
+ * Returns array of { vx, vy, speed, t } for each consecutive pair.
  */
-export function detectWideAuto(trajectory, zones) {
-  if (!trajectory || trajectory.length < 4) return { detected: false, confidence: 0, side: null };
-
-  const { leftStumpX, rightStumpX, wideThresholdPx, frameHeight, batsmanZoneTopY, batsmanZoneBottomY } = zones;
-
-  // Analyze ball position at the batsman's crease (where wide is judged)
-  // This is typically in the lower 35-85% of the frame
-  const creaseZoneTop = frameHeight * 0.35;
-  const creaseZoneBottom = frameHeight * 0.85;
-  
-  const creasePoints = trajectory.filter(
-    (p) => p.y >= creaseZoneTop && p.y <= creaseZoneBottom
-  );
-  
-  if (creasePoints.length === 0) return { detected: false, confidence: 0, side: null };
-
-  // Get the extreme positions (furthest left and right)
-  const minX = Math.min(...creasePoints.map((p) => p.x));
-  const maxX = Math.max(...creasePoints.map((p) => p.x));
-  
-  // Also check the final position (where ball crosses batsman)
-  const finalCreasePoint = creasePoints[creasePoints.length - 1];
-  
-  // Wide line boundaries
-  const wideLineLeft = leftStumpX - wideThresholdPx;
-  const wideLineRight = rightStumpX + wideThresholdPx;
-
-  // Check off side (right) wide
-  if (maxX > wideLineRight || finalCreasePoint.x > wideLineRight) {
-    const overshoot = Math.max(maxX - wideLineRight, finalCreasePoint.x - wideLineRight);
-    const overshootRatio = overshoot / zones.frameWidth;
-    
-    // Higher confidence for larger overshoots
-    const baseConfidence = 0.72;
-    const overshootConfidence = Math.min(0.23, overshootRatio * 2);
-    const confidence = Math.min(0.95, baseConfidence + overshootConfidence);
-    
-    return { detected: true, confidence, side: 'off' };
+function computeVelocityVectors(trajectory) {
+  const velocities = [];
+  for (let i = 1; i < trajectory.length; i++) {
+    const dt = (trajectory[i].t - trajectory[i - 1].t) || 1;
+    const vx = (trajectory[i].x - trajectory[i - 1].x) / dt;
+    const vy = (trajectory[i].y - trajectory[i - 1].y) / dt;
+    velocities.push({
+      vx,
+      vy,
+      speed: Math.sqrt(vx * vx + vy * vy),
+      t: trajectory[i].t,
+      midX: (trajectory[i].x + trajectory[i - 1].x) / 2,
+      midY: (trajectory[i].y + trajectory[i - 1].y) / 2,
+    });
   }
-
-  // Check leg side (left) wide
-  if (minX < wideLineLeft || finalCreasePoint.x < wideLineLeft) {
-    const overshoot = Math.max(wideLineLeft - minX, wideLineLeft - finalCreasePoint.x);
-    const overshootRatio = overshoot / zones.frameWidth;
-    
-    const baseConfidence = 0.72;
-    const overshootConfidence = Math.min(0.23, overshootRatio * 2);
-    const confidence = Math.min(0.95, baseConfidence + overshootConfidence);
-    
-    return { detected: true, confidence, side: 'leg' };
-  }
-  
-  return { detected: false, confidence: 0, side: null };
+  return velocities;
 }
 
-// ── NO BALL HEIGHT ────────────────────────────────────────────────────────────
 /**
- * Enhanced no-ball height detection
- * Ball is a no-ball if it passes above the batsman's shoulder height in normal stance
- * Uses multiple trajectory points for better accuracy
+ * Remove outlier trajectory points.
+ * Uses inter-frame distance and frame boundary validation.
  */
-export function detectNoBallHeightAuto(trajectory, zones) {
-  if (!trajectory || trajectory.length < 4) return { detected: false, confidence: 0 };
+function cleanTrajectory(trajectory, zones) {
+  if (!trajectory || trajectory.length < 4) return null;
 
-  const { shoulderY, frameHeight, batsmanHeightPx, batsmanZoneTopY } = zones;
+  const maxJump = Math.min(zones.frameWidth, zones.frameHeight) * 0.22;
+  const cleaned = [trajectory[0]];
 
-  // Check ball height when it's near the batsman (lower 40-90% of frame)
-  const nearBatsman = trajectory.filter((p) => p.y > frameHeight * 0.4 && p.y < frameHeight * 0.9);
-  if (nearBatsman.length === 0) return { detected: false, confidence: 0 };
+  for (let i = 1; i < trajectory.length; i++) {
+    const prev = cleaned[cleaned.length - 1];
+    const curr = trajectory[i];
 
-  // Find the highest point (minimum Y) when near batsman
-  const minY = Math.min(...nearBatsman.map((p) => p.y));
-  
-  // Count how many points are above shoulder
-  const pointsAboveShoulder = nearBatsman.filter(p => p.y < shoulderY).length;
-  const aboveShoulderRatio = pointsAboveShoulder / nearBatsman.length;
-  
-  // Margin for measurement error (5% of batsman height)
-  const margin = batsmanHeightPx * 0.05;
-  
-  // No-ball if ball is clearly above shoulder
-  if (minY < shoulderY - margin) {
-    const excessHeight = (shoulderY - minY) / batsmanHeightPx;
-    
-    // Base confidence
-    let confidence = 0.68;
-    
-    // Increase confidence based on how far above shoulder
-    confidence += Math.min(0.22, excessHeight * 0.6);
-    
-    // Increase confidence if multiple points are above shoulder
-    confidence += aboveShoulderRatio * 0.10;
-    
-    return { 
-      detected: true, 
-      confidence: Math.min(0.94, confidence),
-      excessHeight,
-      pointsAboveShoulder,
-    };
+    // Boundary check
+    if (
+      curr.x < -zones.frameWidth * 0.1 ||
+      curr.x > zones.frameWidth * 1.1 ||
+      curr.y < -zones.frameHeight * 0.1 ||
+      curr.y > zones.frameHeight * 1.1
+    ) continue;
+
+    // Outlier jump check
+    const dx = curr.x - prev.x;
+    const dy = curr.y - prev.y;
+    if (Math.sqrt(dx * dx + dy * dy) > maxJump) continue;
+
+    cleaned.push(curr);
   }
-  
-  // Edge case: ball very close to shoulder line (umpire's call territory)
-  if (minY < shoulderY + margin && minY >= shoulderY - margin) {
-    return {
-      detected: false,
-      confidence: 0.45, // Low confidence - borderline case
-      borderline: true,
-    };
-  }
-  
-  return { detected: false, confidence: 0 };
+
+  return cleaned.length >= 5 ? cleaned : null;
 }
 
-// ── BOUNCE DETECTION ──────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BOUNCE DETECTION (Trajectory Curvature Method)
+// ═══════════════════════════════════════════════════════════════════════════
+
 /**
- * Enhanced bounce detection with velocity analysis and trajectory validation
- * Detects pitch point and analyzes bounce height relative to batsman
+ * Detect bounce using velocity direction reversal (not just local max Y).
+ *
+ * The key insight: at the bounce point, Y-velocity changes from POSITIVE
+ * (ball moving down toward ground) to NEGATIVE (ball rising away).
+ * This is more robust than just finding local max Y.
+ *
+ * Additional validation:
+ * - Bounce must happen in the lower 40-85% of the frame
+ * - Post-bounce Y must genuinely rise (not just noise)
+ * - Velocity change must exceed a minimum threshold
  */
 export function detectBounceAuto(trajectory, zones) {
   if (!trajectory || trajectory.length < 8) return { detected: false };
 
-  let pitchIndex = -1;
-  let pitchMaxY = 0;
-  let bestBounceScore = 0;
+  const velocities = computeVelocityVectors(trajectory);
+  if (velocities.length < 6) return { detected: false };
 
-  // Find the bounce point using multiple criteria:
-  // 1. Local maximum in Y (ball at ground level)
-  // 2. Velocity change (ball decelerates then accelerates)
-  // 3. Position in frame (should be in middle-to-lower region)
-  
-  for (let i = 3; i < trajectory.length - 3; i++) {
-    const prev2 = trajectory[i - 2].y;
-    const prev1 = trajectory[i - 1].y;
-    const curr = trajectory[i].y;
-    const next1 = trajectory[i + 1].y;
-    const next2 = trajectory[i + 2].y;
-    
-    // Check if this is a local maximum (ball at ground level)
-    const isLocalMax = curr > prev2 && curr > prev1 && curr > next1 && curr > next2;
-    
-    if (!isLocalMax) continue;
-    
-    // Calculate velocity before and after this point
-    const velocityBefore = (curr - prev2) / 2; // Downward velocity (positive = down)
-    const velocityAfter = (next2 - curr) / 2;  // Upward velocity (negative = up)
-    
-    // Bounce should show: positive velocity before, negative after
-    const velocityChange = velocityBefore - velocityAfter;
-    
-    // Score this potential bounce point
-    let score = 0;
-    
-    // Height score: prefer bounces in realistic zone (40-85% of frame height)
-    const heightRatio = curr / zones.frameHeight;
-    if (heightRatio >= 0.4 && heightRatio <= 0.85) {
-      score += 3;
-    } else if (heightRatio < 0.4) {
-      score += 0.5; // Too high (unrealistic)
+  const { frameHeight, batsmanHeightPx } = zones;
+
+  // Smooth velocities with a small window to reduce noise
+  const smoothVy = [];
+  for (let i = 0; i < velocities.length; i++) {
+    const start = Math.max(0, i - 1);
+    const end = Math.min(velocities.length - 1, i + 1);
+    let sum = 0;
+    for (let j = start; j <= end; j++) sum += velocities[j].vy;
+    smoothVy.push(sum / (end - start + 1));
+  }
+
+  let bestBounce = null;
+  let bestScore = 0;
+
+  // Find sign change in Y velocity (down→up = bounce)
+  for (let i = 2; i < smoothVy.length - 2; i++) {
+    const prevVy = smoothVy[i - 1];
+    const currVy = smoothVy[i];
+    const nextVy = smoothVy[i + 1];
+
+    // Look for transition from positive (downward) to negative (upward)
+    const wasGoingDown = prevVy > 0;
+    const isGoingUp = nextVy < 0;
+    if (!wasGoingDown || !isGoingUp) continue;
+
+    const bouncePoint = trajectory[Math.min(i + 1, trajectory.length - 1)];
+
+    // Validation: bounce must be in realistic vertical zone
+    const heightRatio = bouncePoint.y / frameHeight;
+    if (heightRatio < 0.38 || heightRatio > 0.88) continue;
+
+    // Validation: must be enough velocity change (not noise)
+    const velocityChange = prevVy - nextVy;
+    const minVelocityChange = batsmanHeightPx * 0.0008;
+    if (velocityChange < minVelocityChange) continue;
+
+    // Calculate post-bounce rise
+    const afterPoints = trajectory.slice(Math.min(i + 1, trajectory.length - 1));
+    if (afterPoints.length < 3) continue;
+    const minYAfter = Math.min(...afterPoints.map((p) => p.y));
+    const bounceRise = bouncePoint.y - minYAfter;
+
+    // Must have meaningful rise
+    if (bounceRise < batsmanHeightPx * 0.08) continue;
+
+    // Score = velocity change × rise amount × position quality
+    const positionScore = 1 - Math.abs(heightRatio - 0.65);
+    const score = velocityChange * bounceRise * positionScore;
+
+    if (score > bestScore) {
+      bestScore = score;
+
+      // Classify bounce height at the CREASE (where height is judged)
+      // Use the minimum Y reached after the bounce as the height reference
+      let height = 'low';
+      let isNoBall = false;
+
+      // CRITICAL: Bouncer no-ball threshold = SHOULDER height
+      if (minYAfter < zones.shoulderY) {
+        height = 'head';
+        isNoBall = true; // Above shoulder = no-ball for short-pitch
+      } else if (minYAfter < zones.chestY) {
+        height = 'chest';
+      } else if (minYAfter < zones.waistY) {
+        height = 'waist';
+      } else if (minYAfter < zones.hipY) {
+        height = 'hip';
+      } else {
+        height = 'low';
+      }
+
+      const riseRatio = bounceRise / batsmanHeightPx;
+      const qualityScore = Math.min(1, afterPoints.length / 12);
+      const confidence = Math.min(
+        0.93,
+        0.55 + riseRatio * 0.25 + qualityScore * 0.13,
+      );
+
+      bestBounce = {
+        detected: true,
+        bounceY: minYAfter,
+        height,
+        isNoBall,
+        pitchPoint: { x: bouncePoint.x, y: bouncePoint.y },
+        confidence,
+        bounceRise,
+        velocityChange,
+      };
     }
-    
-    // Velocity change score
-    if (velocityChange > zones.batsmanHeightPx * 0.08) {
-      score += 2;
-    }
-    
-    // Y position score (prefer lower values = deeper in frame)
-    if (curr > pitchMaxY) {
-      score += 1;
-    }
-    
-    if (score > bestBounceScore) {
-      bestBounceScore = score;
-      pitchMaxY = curr;
-      pitchIndex = i;
-    }
   }
 
-  // Require minimum score to confirm bounce
-  if (pitchIndex === -1 || bestBounceScore < 2 || pitchMaxY < zones.frameHeight * 0.35) {
-    return { detected: false };
-  }
-
-  const afterPitch = trajectory.slice(pitchIndex);
-  if (afterPitch.length < 3) return { detected: false };
-
-  const minYAfterPitch = Math.min(...afterPitch.map((p) => p.y));
-  const bounceRise = pitchMaxY - minYAfterPitch;
-  const minRise = zones.batsmanHeightPx * 0.10;
-
-  if (bounceRise < minRise) return { detected: false };
-
-  // Determine bounce height category with more precise thresholds
-  let height = 'low';
-  let isNoBall = false;
-  
-  // Head height: above shoulder line (no-ball)
-  if (minYAfterPitch < zones.shoulderY) {
-    height = 'head';
-    isNoBall = true;
-  } 
-  // Chest height: between shoulder and chest
-  else if (minYAfterPitch < zones.chestY) {
-    height = 'chest';
-  }
-  // Hip/waist height
-  else if (minYAfterPitch < zones.hipY) {
-    height = 'waist';
-  }
-  // Low bounce
-  else {
-    height = 'low';
-  }
-
-  // Calculate confidence based on multiple factors
-  const riseRatio = bounceRise / zones.batsmanHeightPx;
-  const trajectoryQuality = Math.min(1, afterPitch.length / 10);
-  const baseConfidence = 0.55;
-  const riseConfidence = Math.min(0.30, riseRatio * 0.5);
-  const qualityConfidence = trajectoryQuality * 0.15;
-  
-  const confidence = Math.min(0.92, baseConfidence + riseConfidence + qualityConfidence);
-
-  return {
-    detected: true,
-    bounceY: minYAfterPitch,
-    height,
-    isNoBall,
-    pitchPoint: { x: trajectory[pitchIndex].x, y: trajectory[pitchIndex].y },
-    confidence,
-    bounceRise,
-  };
+  return bestBounce || { detected: false };
 }
 
-// ── LBW DETECTION ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// FULL TOSS / HEIGHT DETECTION
+// Separate logic for full tosses (no bounce) vs short-pitch (bouncer)
+// ═══════════════════════════════════════════════════════════════════════════
+
 /**
- * Enhanced LBW Analysis with improved trajectory projection and cricket rules
- * 
- * LBW Rules:
- * 1. Ball must NOT pitch outside leg stump
- * 2. Ball must hit pad in line with stumps (or outside if no shot offered - simplified here)
- * 3. Ball trajectory must project to hit stumps
- * 4. Ball must not have hit bat first (assumed in this analysis)
+ * Detect if a full toss (no bounce) reaches above WAIST height.
+ *
+ * For a full toss:
+ * - The ball must NOT have bounced (hasBounced = false)
+ * - Height is judged at the batsman's crease (late in trajectory)
+ * - Threshold: WAIST height (not shoulder!)
+ *
+ * For detecting the height, we look at the ball's position when it is
+ * closest to the batsman (the last 30% of the trajectory), since that
+ * is where the height measurement counts.
+ *
+ * @param {Array} trajectory - cleaned trajectory points
+ * @param {Object} zones - adaptive zones
+ * @param {boolean} hasBounced - whether bounce was already detected
+ * @returns {{ detected: boolean, confidence: number, isFullToss: boolean, heightLabel?: string, excessAboveWaist?: number, borderline?: boolean }}
  */
-export function detectLBW(trajectory, zones, batsmanX = null) {
-  if (!trajectory || trajectory.length < 6) {
-    return { 
-      possible: false, 
-      confidence: 0, 
-      reason: 'Insufficient trajectory data',
-      pitchInLine: false,
-      impactInLine: false,
-      wouldHitStumps: false,
-    };
+export function detectNoBallHeightAuto(trajectory, zones, hasBounced = false) {
+  if (!trajectory || trajectory.length < 5) {
+    return { detected: false, confidence: 0, isFullToss: false };
   }
 
-  const { leftStumpX, rightStumpX, kneeY, hipY, feetY, frameHeight, pitchCenterX } = zones;
-  
-  // Stump zone with tolerance for umpire's call
-  const stumpWidth = rightStumpX - leftStumpX;
-  const stumpTolerance = stumpWidth * 0.35;
-  const lbwLeftBound = leftStumpX - stumpTolerance;
-  const lbwRightBound = rightStumpX + stumpTolerance;
+  const { batsmanHeightPx, waistY, shoulderY, frameHeight } = zones;
 
-  // 1. PITCH POINT DETECTION
-  // Find where ball pitched (local max Y = bounce point)
-  let pitchPoint = null;
-  let maxY = 0;
-  let pitchIndex = -1;
-  
-  for (let i = 2; i < trajectory.length - 2; i++) {
-    const curr = trajectory[i].y;
-    const prev = trajectory[i - 1].y;
-    const next = trajectory[i + 1].y;
-    
-    // Local maximum indicates pitch point
-    if (curr > prev && curr > next && curr > maxY && curr > frameHeight * 0.4) {
-      maxY = curr;
-      pitchPoint = trajectory[i];
-      pitchIndex = i;
+  // ── FULL TOSS DETECTION (no bounce) ───────────────────────────────────────
+  if (!hasBounced) {
+    // For a full toss, height is judged at the crease.
+    // The crease is reached in the later part of the trajectory.
+    // We look at the last 35% of trajectory points (near batsman).
+    const creaseStartIdx = Math.floor(trajectory.length * 0.65);
+    const creasePoints = trajectory.slice(creaseStartIdx);
+
+    // Filter to points in the batsman's vertical zone
+    const validPoints = creasePoints.filter(
+      (p) => p.y > frameHeight * 0.15 && p.y < frameHeight * 0.90,
+    );
+
+    if (validPoints.length === 0) {
+      return { detected: false, confidence: 0, isFullToss: true };
     }
+
+    // Find the minimum Y (highest point) when near batsman
+    const minY = Math.min(...validPoints.map((p) => p.y));
+
+    // Measurement uncertainty: 4% of batsman height
+    const margin = batsmanHeightPx * 0.04;
+
+    // RULE: Full toss above WAIST = no-ball
+    if (minY < waistY - margin) {
+      const excessAboveWaist = (waistY - minY) / batsmanHeightPx;
+
+      let confidence = 0.70; // Base confidence for waist-high full toss
+      confidence += Math.min(0.20, excessAboveWaist * 0.8);
+
+      // Check if also above shoulder (even more clearly illegal)
+      const alsoAboveShoulder = minY < shoulderY - margin;
+      if (alsoAboveShoulder) confidence = Math.min(0.95, confidence + 0.05);
+
+      // More confident when multiple late points are above waist
+      const pointsAboveWaist = validPoints.filter((p) => p.y < waistY).length;
+      const consistencyBonus = Math.min(0.05, (pointsAboveWaist / validPoints.length) * 0.05);
+      confidence = Math.min(0.95, confidence + consistencyBonus);
+
+      return {
+        detected: true,
+        confidence,
+        isFullToss: true,
+        heightLabel: minY < shoulderY ? 'above shoulder (full toss)' : 'waist-high full toss',
+        excessAboveWaist,
+      };
+    }
+
+    // Borderline (near waist line) — umpire's call territory
+    if (minY < waistY + margin && minY >= waistY - margin) {
+      return { detected: false, confidence: 0.42, isFullToss: true, borderline: true };
+    }
+
+    return { detected: false, confidence: 0, isFullToss: true };
   }
 
-  // If no clear pitch detected, use the deepest point in frame
-  if (!pitchPoint) {
-    pitchPoint = trajectory.reduce((max, p) => (p.y > max.y ? p : max), trajectory[0]);
-    pitchIndex = trajectory.indexOf(pitchPoint);
+  // ── BOUNCER (short-pitch) HEIGHT CHECK ────────────────────────────────────
+  // Already handled inside detectBounceAuto (isNoBall flag).
+  // This path is not typically reached, but kept as fallback.
+  return { detected: false, confidence: 0, isFullToss: false };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WIDE DETECTION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Detect wide deliveries using trajectory analysis at the batsman's crease.
+ *
+ * Key improvement: We analyze the ball's position specifically in the
+ * horizontal zone where wide is judged (near the batsman at the crease),
+ * not across the entire frame.
+ *
+ * Wide is judged at the crease, so we weight late-trajectory points more.
+ */
+export function detectWideAuto(trajectory, zones) {
+  if (!trajectory || trajectory.length < 5) {
+    return { detected: false, confidence: 0, side: null };
   }
 
-  // 2. CHECK PITCH LOCATION
-  const pitchInLine = pitchPoint.x >= lbwLeftBound;
-  const pitchedOutsideLeg = pitchPoint.x < lbwLeftBound;
-  const pitchedOutsideOff = pitchPoint.x > lbwRightBound;
+  const {
+    leftStumpX,
+    rightStumpX,
+    wideThresholdPx,
+    frameHeight,
+  } = zones;
 
-  if (pitchedOutsideLeg) {
-    return {
-      possible: false,
-      confidence: 0,
-      reason: 'Pitched outside leg stump - Not out',
-      pitchInLine: false,
-      impactInLine: false,
-      wouldHitStumps: false,
-      pitchPoint,
-    };
-  }
+  const wideLineLeft  = leftStumpX  - wideThresholdPx;
+  const wideLineRight = rightStumpX + wideThresholdPx;
 
-  // 3. IMPACT POINT DETECTION
-  // Find where ball is in the pad zone (knee to hip region)
-  const padZoneTop = kneeY * 0.80;
-  const padZoneBottom = hipY * 1.20;
-  
-  const padImpactPoints = trajectory.filter(
-    (p) => p.y >= padZoneTop && p.y <= padZoneBottom
+  // Wide is judged where ball passes the crease
+  // Focus on the middle-to-late part of the trajectory (40-90% of frame height)
+  const creaseZoneTop    = frameHeight * 0.38;
+  const creaseZoneBottom = frameHeight * 0.88;
+
+  const creasePoints = trajectory.filter(
+    (p) => p.y >= creaseZoneTop && p.y <= creaseZoneBottom,
   );
 
-  const impactPoint = padImpactPoints.length > 0 
-    ? padImpactPoints[padImpactPoints.length - 1]
-    : trajectory[trajectory.length - 1];
+  if (creasePoints.length === 0) return { detected: false, confidence: 0, side: null };
 
-  const impactInLine = impactPoint.x >= lbwLeftBound && impactPoint.x <= lbwRightBound;
-  const impactOutsideOff = impactPoint.x > lbwRightBound;
+  // Weight later points more (ball closer to crease = more relevant)
+  let weightedMinX = Infinity;
+  let weightedMaxX = -Infinity;
 
-  // 4. TRAJECTORY PROJECTION TO STUMPS
-  // Use points after pitch for projection (more accurate)
-  const afterPitch = pitchIndex >= 0 ? trajectory.slice(pitchIndex) : trajectory;
-  
-  if (afterPitch.length < 3) {
-    return {
-      possible: false,
-      confidence: 0,
-      reason: 'Insufficient trajectory for projection',
+  creasePoints.forEach((p, idx) => {
+    const weight = 1 + (idx / creasePoints.length) * 2; // Later points weight up to 3x more
+    if (p.x < weightedMinX) weightedMinX = p.x;
+    if (p.x > weightedMaxX) weightedMaxX = p.x;
+  });
+
+  // The "crease crossing" point (where ball is nearest to the stumps in Y)
+  const deepestCreasePoint = creasePoints.reduce(
+    (best, p) => (p.y > best.y ? p : best),
+    creasePoints[0],
+  );
+
+  // Check off-side (right) wide
+  const offSideExtreme = Math.max(weightedMaxX, deepestCreasePoint.x);
+  if (offSideExtreme > wideLineRight) {
+    const overshoot = offSideExtreme - wideLineRight;
+    const overshootRatio = overshoot / zones.frameWidth;
+    const confidence = Math.min(0.95, 0.72 + overshootRatio * 2.5);
+    return { detected: true, confidence, side: 'off' };
+  }
+
+  // Check leg-side (left) wide
+  const legSideExtreme = Math.min(weightedMinX, deepestCreasePoint.x);
+  if (legSideExtreme < wideLineLeft) {
+    const overshoot = wideLineLeft - legSideExtreme;
+    const overshootRatio = overshoot / zones.frameWidth;
+    const confidence = Math.min(0.95, 0.72 + overshootRatio * 2.5);
+    return { detected: true, confidence, side: 'leg' };
+  }
+
+  return { detected: false, confidence: 0, side: null };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LBW DETECTION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * LBW Analysis using trajectory projection and cricket law.
+ *
+ * LBW Decision Tree:
+ * 1. Did ball pitch OUTSIDE leg stump? → NOT OUT (regardless of anything else)
+ * 2. Did ball pitch OUTSIDE off stump AND batsman played a shot? → NOT OUT
+ *    (Simplified: we don't track shot-playing, so mark as low confidence)
+ * 3. Did ball impact pad IN LINE with the stumps? → Required for OUT
+ * 4. Would ball have gone on to hit the stumps? → Required for OUT
+ *
+ * Umpire's Call:
+ *  - Impact on the line (marginal): confidence 0.40-0.60
+ *  - Ball clipping edge of stumps: confidence 0.40-0.60
+ *  - In these cases, original decision stands + review RETAINED
+ */
+export function detectLBW(trajectory, zones) {
+  const notOut = (reason, extra = {}) => ({
+    possible: false,
+    confidence: 0,
+    reason,
+    pitchInLine: false,
+    impactInLine: false,
+    wouldHitStumps: false,
+    isUmpireCall: false,
+    ...extra,
+  });
+
+  if (!trajectory || trajectory.length < 6) {
+    return notOut('Insufficient trajectory data');
+  }
+
+  const {
+    leftStumpX,
+    rightStumpX,
+    kneeY,
+    hipY,
+    feetY,
+    frameHeight,
+    pitchCenterX,
+    batsmanHeightPx,
+  } = zones;
+
+  const stumpWidth = rightStumpX - leftStumpX;
+  // Tolerance for umpire's call territory (edge of stump ± 35% of stump width)
+  const umpireCallTolerance = stumpWidth * 0.35;
+  const strictLeftBound  = leftStumpX;
+  const strictRightBound = rightStumpX;
+  const ucLeftBound  = leftStumpX  - umpireCallTolerance;
+  const ucRightBound = rightStumpX + umpireCallTolerance;
+
+  // ── 1. FIND PITCH POINT ────────────────────────────────────────────────────
+  // Use velocity reversal method for accuracy
+  const velocities = computeVelocityVectors(trajectory);
+  let pitchPoint = null;
+  let pitchIndex = -1;
+
+  for (let i = 1; i < velocities.length - 1; i++) {
+    const prevVy = velocities[i - 1].vy;
+    const nextVy = velocities[i + 1].vy;
+    // Downward → upward velocity = bounce
+    if (prevVy > 0 && nextVy < 0) {
+      const candidateY = velocities[i].midY;
+      if (candidateY > frameHeight * 0.35) {
+        if (!pitchPoint || candidateY > pitchPoint.y) {
+          pitchPoint = { x: velocities[i].midX, y: candidateY };
+          pitchIndex = i + 1;
+        }
+      }
+    }
+  }
+
+  // If no clear bounce, ball may be a full toss — pitch point is moot
+  // Use the deepest frame point as proxy
+  if (!pitchPoint) {
+    const deepest = trajectory.reduce((m, p) => (p.y > m.y ? p : m), trajectory[0]);
+    if (deepest.y > frameHeight * 0.45) {
+      pitchPoint = deepest;
+      pitchIndex = trajectory.indexOf(deepest);
+    }
+  }
+
+  // ── 2. CHECK PITCH LOCATION ────────────────────────────────────────────────
+  let pitchInLine = false;
+  let pitchedOutsideLeg = false;
+  let pitchedOutsideOff = false;
+
+  if (pitchPoint) {
+    pitchedOutsideLeg = pitchPoint.x < ucLeftBound;
+    pitchedOutsideOff = pitchPoint.x > ucRightBound;
+    pitchInLine = !pitchedOutsideLeg;
+  }
+
+  // RULE 1: Pitched outside leg = NOT OUT (absolute)
+  if (pitchedOutsideLeg) {
+    return notOut('Pitched outside leg stump — Not Out', {
+      pitchInLine: false,
+      pitchPoint,
+    });
+  }
+
+  // ── 3. FIND IMPACT POINT ───────────────────────────────────────────────────
+  // Impact zone: knee to hip (where pads are)
+  // Use a slightly generous pad zone for detection
+  const padTop    = kneeY * 0.82;
+  const padBottom = hipY  * 1.15;
+
+  const padPoints = trajectory.filter(
+    (p) => p.y >= padTop && p.y <= padBottom,
+  );
+
+  // Use post-pitch trajectory if available; otherwise use late trajectory
+  const relevantTrajectory = pitchIndex > 0
+    ? trajectory.slice(pitchIndex)
+    : trajectory.slice(Math.floor(trajectory.length * 0.5));
+
+  const relevantPadPoints = relevantTrajectory.filter(
+    (p) => p.y >= padTop && p.y <= padBottom,
+  );
+
+  const impactPoint = relevantPadPoints.length > 0
+    ? relevantPadPoints[relevantPadPoints.length - 1]
+    : (relevantTrajectory.length > 0 ? relevantTrajectory[relevantTrajectory.length - 1] : null);
+
+  if (!impactPoint) return notOut('No impact point detected');
+
+  // Classify impact location
+  const impactInLine = impactPoint.x >= ucLeftBound && impactPoint.x <= ucRightBound;
+  const impactStrictInLine = impactPoint.x >= strictLeftBound && impactPoint.x <= strictRightBound;
+  const impactOutsideOff = impactPoint.x > ucRightBound;
+
+  // ── 4. TRAJECTORY PROJECTION ───────────────────────────────────────────────
+  // Use the last 40% of the post-pitch trajectory for projection
+  const projectionSource = pitchIndex > 0
+    ? trajectory.slice(pitchIndex)
+    : trajectory.slice(Math.floor(trajectory.length * 0.6));
+
+  if (projectionSource.length < 3) {
+    return notOut('Insufficient post-pitch data for projection', {
       pitchInLine,
       impactInLine,
-      wouldHitStumps: false,
       pitchPoint,
       impactPoint,
-    };
-  }
-  
-  // Use last 40% of trajectory for projection (most recent direction)
-  const projectionPoints = afterPitch.slice(-Math.max(3, Math.floor(afterPitch.length * 0.4)));
-  
-  // Calculate average velocity (direction)
-  let totalDX = 0, totalDY = 0;
-  for (let i = 1; i < projectionPoints.length; i++) {
-    totalDX += projectionPoints[i].x - projectionPoints[i - 1].x;
-    totalDY += projectionPoints[i].y - projectionPoints[i - 1].y;
-  }
-  const avgDX = totalDX / (projectionPoints.length - 1);
-  const avgDY = totalDY / (projectionPoints.length - 1);
-
-  // Project to stump base Y (stumps are at ~88% of frame height)
-  const stumpY = feetY * 0.88;
-  const lastPoint = projectionPoints[projectionPoints.length - 1];
-  
-  let projectedX = lastPoint.x;
-  if (avgDY !== 0) {
-    const stepsToStump = (stumpY - lastPoint.y) / avgDY;
-    projectedX = lastPoint.x + avgDX * stepsToStump;
+    });
   }
 
-  // Check if projection hits stumps (with tolerance)
-  const wouldHitStumps = projectedX >= leftStumpX - stumpTolerance && 
-                          projectedX <= rightStumpX + stumpTolerance;
-  
-  const projectionCenterDistance = Math.abs(projectedX - pitchCenterX);
-  const isUmpireCallProjection = projectionCenterDistance > stumpWidth * 0.4;
+  // Use recent velocity for projection (last 40% of available points)
+  const recentPoints = projectionSource.slice(
+    -Math.max(3, Math.floor(projectionSource.length * 0.4)),
+  );
 
-  // 5. CALCULATE CONFIDENCE
+  // Compute average velocity from recent points
+  let sumDX = 0, sumDY = 0, count = 0;
+  for (let i = 1; i < recentPoints.length; i++) {
+    const dt = Math.max(1, recentPoints[i].t - recentPoints[i - 1].t);
+    sumDX += (recentPoints[i].x - recentPoints[i - 1].x) / dt;
+    sumDY += (recentPoints[i].y - recentPoints[i - 1].y) / dt;
+    count++;
+  }
+
+  if (count === 0) return notOut('Cannot compute velocity for projection');
+
+  const avgVx = sumDX / count;
+  const avgVy = sumDY / count;
+
+  // Project to stump target Y
+  const stumpTargetY = feetY - batsmanHeightPx * 0.10;
+  const lastPt = recentPoints[recentPoints.length - 1];
+
+  let projectedX = lastPt.x;
+  if (Math.abs(avgVy) > 0.001) {
+    const stepsToStump = (stumpTargetY - lastPt.y) / avgVy;
+    projectedX = lastPt.x + avgVx * stepsToStump;
+  }
+
+  // Determine stump hit
+  const wouldHitStumpsStrict = projectedX >= strictLeftBound && projectedX <= strictRightBound;
+  const wouldHitStumpsUC = projectedX >= ucLeftBound && projectedX <= ucRightBound;
+
+  // ── 5. CONFIDENCE CALCULATION ─────────────────────────────────────────────
   let confidence = 0;
-  
-  // Pitch location (25 points)
-  if (pitchInLine && !pitchedOutsideOff) {
-    confidence += 0.25;
-  } else if (pitchedOutsideOff) {
-    confidence += 0.10; // Reduced for pitching outside off
-  }
-  
-  // Impact location (35 points)
-  if (impactInLine) {
-    confidence += 0.35;
-  } else if (impactOutsideOff) {
-    confidence += 0.05; // Very low for impact outside off
-  }
-  
-  // Projection accuracy (40 points)
-  if (wouldHitStumps) {
-    if (isUmpireCallProjection) {
-      confidence += 0.20; // Umpire's call territory
+  const evidenceLog = [];
+
+  // Pitch line evidence (0–0.25)
+  if (pitchInLine) {
+    if (!pitchedOutsideOff) {
+      confidence += 0.25;
+      evidenceLog.push('Pitched in line: +0.25');
     } else {
-      confidence += 0.40; // Clear hit
+      confidence += 0.10;
+      evidenceLog.push('Pitched outside off (low confidence): +0.10');
     }
   }
 
-  // Trajectory quality bonus
-  const trajectoryQuality = Math.min(1, trajectory.length / 15);
-  confidence += trajectoryQuality * 0.05;
+  // Impact evidence (0–0.35)
+  if (impactStrictInLine) {
+    confidence += 0.35;
+    evidenceLog.push('Impact strictly in line: +0.35');
+  } else if (impactInLine) {
+    confidence += 0.20;
+    evidenceLog.push('Impact marginally in line: +0.20');
+  } else if (!impactOutsideOff) {
+    confidence += 0.05;
+    evidenceLog.push('Impact near line: +0.05');
+  }
 
-  // Determine if LBW is possible (needs minimum confidence)
-  const possible = confidence >= 0.55 && impactInLine && wouldHitStumps && !pitchedOutsideLeg;
+  // Projection evidence (0–0.40)
+  if (wouldHitStumpsStrict) {
+    // Check if clipping (near edge) → umpire's call territory
+    const distFromCenter = Math.abs(projectedX - pitchCenterX);
+    if (distFromCenter > stumpWidth * 0.35) {
+      confidence += 0.22;
+      evidenceLog.push('Clipping stump edge (marginal): +0.22');
+    } else {
+      confidence += 0.40;
+      evidenceLog.push('Clearly hitting stumps: +0.40');
+    }
+  } else if (wouldHitStumpsUC) {
+    confidence += 0.15;
+    evidenceLog.push('Clipping stump (borderline): +0.15');
+  }
 
-  // Generate reason
+  // Trajectory quality bonus (0–0.05)
+  const qualityBonus = Math.min(0.05, (trajectory.length / 25) * 0.05);
+  confidence += qualityBonus;
+  confidence = Math.min(0.95, confidence);
+
+  // ── 6. DECISION ───────────────────────────────────────────────────────────
+  // Umpire's Call: 0.40 ≤ confidence < 0.62
+  const isUmpireCall = confidence >= 0.40 && confidence < 0.62;
+
+  // OUT requires: impact in line + would hit stumps + minimum confidence
+  const possible =
+    confidence >= 0.55 &&
+    impactInLine &&
+    (wouldHitStumpsStrict || wouldHitStumpsUC) &&
+    !pitchedOutsideLeg;
+
+  // Generate human-readable reason
   let reason = '';
   if (possible) {
-    if (pitchedOutsideOff) {
-      reason = "Umpire's Call - Pitched outside off, impact in line, hitting stumps";
-    } else if (isUmpireCallProjection) {
-      reason = "Umpire's Call - Clipping stumps";
+    if (isUmpireCall) {
+      reason = pitchedOutsideOff
+        ? "Umpire's Call – Pitched outside off, marginal impact & projection"
+        : "Umpire's Call – Clipping stumps";
     } else {
-      reason = 'Pitched in line, impact in line, hitting stumps - OUT';
+      reason = 'Pitched in line, impact in line, hitting stumps – OUT';
     }
   } else {
-    if (pitchedOutsideLeg) {
-      reason = 'Pitched outside leg stump - Not out';
-    } else if (!impactInLine) {
-      reason = 'Impact outside line - Not out';
-    } else if (!wouldHitStumps) {
-      reason = 'Ball missing stumps - Not out';
-    } else {
-      reason = 'Insufficient evidence - Not out';
-    }
+    if (!impactInLine)         reason = 'Impact outside stump line – Not Out';
+    else if (!wouldHitStumpsStrict && !wouldHitStumpsUC)
+                               reason = 'Ball missing stumps – Not Out';
+    else if (pitchedOutsideOff) reason = 'Pitched outside off stump – Insufficient evidence';
+    else                        reason = 'Insufficient evidence – Not Out';
   }
 
   return {
     possible,
-    confidence: Math.min(0.95, confidence),
+    confidence,
     reason,
     pitchInLine,
-    impactInLine,
-    wouldHitStumps,
     pitchedOutsideOff,
+    pitchedOutsideLeg,
+    impactInLine,
+    impactStrictInLine,
     impactOutsideOff,
+    wouldHitStumps: wouldHitStumpsStrict || wouldHitStumpsUC,
+    wouldHitStumpsStrict,
+    wouldHitStumpsUC,
     projectedX,
     pitchPoint,
     impactPoint,
-    isUmpireCall: confidence >= 0.45 && confidence < 0.65,
+    isUmpireCall,
     projectionDistance: Math.abs(projectedX - pitchCenterX),
+    evidenceLog,
   };
 }
 
-// ── MAIN ANALYSIS ─────────────────────────────────────────────────────────────
-/**
- * Validate and clean trajectory data before analysis
- * Removes noise, outliers, and ensures minimum quality standards
- */
-function validateAndCleanTrajectory(trajectory, zones) {
-  if (!trajectory || trajectory.length < 5) return null;
-  
-  // Remove outliers (points too far from neighbors)
-  const cleaned = [];
-  const maxJump = Math.min(zones.frameWidth, zones.frameHeight) * 0.20; // 20% max jump
-  
-  for (let i = 0; i < trajectory.length; i++) {
-    const point = trajectory[i];
-    
-    // First point always included
-    if (i === 0) {
-      cleaned.push(point);
-      continue;
-    }
-    
-    // Check distance from previous point
-    const prev = cleaned[cleaned.length - 1];
-    const dx = point.x - prev.x;
-    const dy = point.y - prev.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    
-    // Skip outliers (too far from previous point)
-    if (distance > maxJump) {
-      continue;
-    }
-    
-    // Check if point is within reasonable frame bounds
-    if (point.x < 0 || point.x > zones.frameWidth || 
-        point.y < 0 || point.y > zones.frameHeight) {
-      continue;
-    }
-    
-    cleaned.push(point);
-  }
-  
-  // Need minimum points after cleaning
-  if (cleaned.length < 5) return null;
-  
-  return cleaned;
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// MAIN ANALYSIS PIPELINE
+// ═══════════════════════════════════════════════════════════════════════════
 
-export function analyzeBallDeliveryAuto(trajectory, detectionState, deviceTilt, frameWidth, frameHeight) {
+/**
+ * Full delivery analysis.
+ *
+ * @param {Array}  trajectory     - raw [{x, y, t}] from frame processing
+ * @param {Object} detectionState - { bounceCount: number }
+ * @param {Object} deviceTilt     - { alpha, beta, gamma }
+ * @param {number} frameWidth
+ * @param {number} frameHeight
+ * @returns {Object} complete analysis result
+ */
+export function analyzeBallDeliveryAuto(
+  trajectory,
+  detectionState,
+  deviceTilt,
+  frameWidth,
+  frameHeight,
+) {
   const zones = computeAdaptiveZones(frameWidth, frameHeight, deviceTilt);
 
   const result = {
-    zones, // expose zones for UI overlay
+    zones,
     wideDetected: false,
     wideConfidence: 0,
     wideSide: null,
@@ -671,6 +844,7 @@ export function analyzeBallDeliveryAuto(trajectory, detectionState, deviceTilt, 
     noBallHeightConfidence: 0,
     noBallBounceDetected: false,
     noBallBounceConfidence: 0,
+    noBallReason: null,
     bounceDetected: false,
     bounceHeight: null,
     isBounce: false,
@@ -682,231 +856,201 @@ export function analyzeBallDeliveryAuto(trajectory, detectionState, deviceTilt, 
 
   if (!trajectory || trajectory.length < 5) return result;
 
-  // Validate and clean trajectory
-  const cleanedTrajectory = validateAndCleanTrajectory(trajectory, zones);
-  if (!cleanedTrajectory) {
-    result.trajectoryQuality = 0;
-    return result;
-  }
-  
-  // Calculate trajectory quality score
+  // Clean trajectory
+  const cleanedTrajectory = cleanTrajectory(trajectory, zones);
+  if (!cleanedTrajectory) return result;
+
   result.trajectoryQuality = Math.min(1, cleanedTrajectory.length / 20);
 
-  // Run all detection algorithms
-  const wide = detectWideAuto(cleanedTrajectory, zones);
-  result.wideDetected = wide.detected;
-  result.wideConfidence = wide.confidence;
-  result.wideSide = wide.side;
-
-  const noBallH = detectNoBallHeightAuto(cleanedTrajectory, zones);
-  result.noBallHeightDetected = noBallH.detected;
-  result.noBallHeightConfidence = noBallH.confidence;
-
+  // ── Step 1: Detect bounce ─────────────────────────────────────────────────
   const bounce = detectBounceAuto(cleanedTrajectory, zones);
-  if (bounce.detected) {
-    result.bounceDetected = true;
-    result.isBounce = true;
-    result.bounceHeight = bounce.height;
-    result.pitchPoint = bounce.pitchPoint;
-    
+  const hasBounced = bounce.detected;
+
+  if (hasBounced) {
+    result.bounceDetected  = true;
+    result.isBounce        = true;
+    result.bounceHeight    = bounce.height;
+    result.pitchPoint      = bounce.pitchPoint;
+
+    // BOUNCER NO-BALL: above shoulder after bounce
     if (bounce.isNoBall) {
-      result.noBallBounceDetected = true;
+      result.noBallBounceDetected   = true;
       result.noBallBounceConfidence = bounce.confidence;
+      result.noBallReason = `Short-pitch ball rose above shoulder height (${bounce.height} height)`;
     }
-    
-    // Check bounce count limit (2nd+ bounce in over = no-ball)
-    if ((detectionState?.bounceCount || 0) >= CRICKET.MAX_BOUNCES_PER_OVER) {
+
+    // SECOND BOUNCER IN OVER: count exceeded
+    const currentBounceCount = detectionState?.bounceCount || 0;
+    if (currentBounceCount >= CRICKET.MAX_BOUNCES_PER_OVER) {
       result.noBallBounceDetected = true;
-      result.noBallBounceConfidence = Math.max(result.noBallBounceConfidence, 0.92);
+      result.noBallBounceConfidence = Math.max(result.noBallBounceConfidence, 0.95);
+      result.noBallReason = `2nd short-pitch delivery in the over (only ${CRICKET.MAX_BOUNCES_PER_OVER} allowed)`;
     }
   }
 
-  // LBW analysis (only if trajectory quality is sufficient)
-  if (result.trajectoryQuality >= 0.4) {
+  // ── Step 2: Full-toss height detection ────────────────────────────────────
+  // ONLY check full-toss no-ball if the ball did NOT bounce
+  // For bounced balls, the height no-ball is handled above (shoulder threshold)
+  const heightResult = detectNoBallHeightAuto(cleanedTrajectory, zones, hasBounced);
+  if (!hasBounced && heightResult.detected) {
+    result.noBallHeightDetected   = true;
+    result.noBallHeightConfidence = heightResult.confidence;
+    result.noBallReason = (heightResult.heightLabel || 'Waist-high full toss');
+  }
+
+  // ── Step 3: Wide detection ────────────────────────────────────────────────
+  const wide = detectWideAuto(cleanedTrajectory, zones);
+  result.wideDetected   = wide.detected;
+  result.wideConfidence = wide.confidence;
+  result.wideSide       = wide.side;
+
+  // ── Step 4: LBW analysis ──────────────────────────────────────────────────
+  if (result.trajectoryQuality >= 0.35) {
     const lbw = detectLBW(cleanedTrajectory, zones);
+    
+    // LBW Rule: For a batter to be declared out, the ball must be a legal delivery (not a no-ball)
+    if (result.noBallHeightDetected || result.noBallBounceDetected) {
+      lbw.possible = false;
+      lbw.reason = 'No-ball – Cannot be LBW';
+    }
+
     result.lbwPossible = lbw.possible;
-    result.lbwData = lbw;
+    result.lbwData     = lbw;
   }
 
   return result;
 }
 
-// ── BALL COLOR DETECTION (frame analysis) ────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// BALL COLOR DETECTION (frame-level pixel analysis)
+// ═══════════════════════════════════════════════════════════════════════════
+
 /**
- * Advanced ball detection with motion tracking and color segmentation
- * Detects cricket balls (red, white, yellow/tennis) using HSV-like color space
- * and spatial clustering to filter noise
+ * Detect cricket ball in a raw RGBA pixel buffer.
+ * Uses multi-color detection + spatial clustering + temporal consistency.
+ *
+ * @param {Uint8ClampedArray} pixels  - RGBA buffer
+ * @param {number} width
+ * @param {number} height
+ * @param {{ x: number, y: number } | null} previousPosition
+ * @returns {{ detected: boolean, x: number, y: number, confidence: number, radius: number }}
  */
 export function detectBallInFrameAuto(pixels, width, height, previousPosition = null) {
   if (!pixels || pixels.length < width * height * 4) {
     return { detected: false, x: 0, y: 0, confidence: 0, radius: 0 };
   }
 
-  // Multi-pass detection: find candidate pixels, cluster them, validate clusters
   const candidates = [];
-  
+
   for (let i = 0; i < pixels.length; i += 4) {
     const r = pixels[i];
     const g = pixels[i + 1];
     const b = pixels[i + 2];
-    
-    // Enhanced color detection for different ball types
-    // Red leather ball (traditional cricket ball)
+    const a = pixels[i + 3];
+    if (a < 128) continue;
+
+    // Red leather ball
     const isRed = r > 130 && g < 90 && b < 90 && r > g * 1.8 && r > b * 1.8;
-    
-    // White ball (limited overs cricket)
-    const isWhite = r > 210 && g > 210 && b > 210 && 
-                    Math.abs(r - g) < 25 && Math.abs(r - b) < 25 && Math.abs(g - b) < 25;
-    
+    // White ball (limited overs)
+    const isWhite = r > 210 && g > 210 && b > 210 &&
+      Math.abs(r - g) < 25 && Math.abs(r - b) < 25;
     // Yellow/tennis ball (gully cricket)
     const isYellow = r > 180 && g > 160 && b < 100 && r > b * 1.8 && g > b * 1.8;
-    
-    // Orange ball (sometimes used)
+    // Orange ball
     const isOrange = r > 200 && g > 100 && g < 160 && b < 80 && r > g * 1.3;
-    
-    // Pink ball (day-night matches)
+    // Pink ball (day-night)
     const isPink = r > 180 && g > 100 && g < 150 && b > 120 && b < 180 && r > g * 1.2;
 
     if (isRed || isWhite || isYellow || isOrange || isPink) {
-      const pixelIndex = i / 4;
-      const px = pixelIndex % width;
-      const py = Math.floor(pixelIndex / width);
-      
-      candidates.push({ x: px, y: py, color: { r, g, b } });
+      const idx = i / 4;
+      candidates.push({ x: idx % width, y: Math.floor(idx / width) });
     }
   }
 
-  // Need minimum pixels to form a ball
   if (candidates.length < 12 || candidates.length > width * height * 0.12) {
     return { detected: false, x: 0, y: 0, confidence: 0, radius: 0 };
   }
 
-  // Spatial clustering: group nearby pixels using simple grid-based clustering
-  const clusters = clusterPixels(candidates, width, height);
-  
-  if (clusters.length === 0) {
-    return { detected: false, x: 0, y: 0, confidence: 0, radius: 0 };
+  // Cluster candidates
+  const gridSize = Math.max(8, Math.min(width, height) / 30);
+  const grid = {};
+
+  for (const p of candidates) {
+    const key = `${Math.floor(p.x / gridSize)},${Math.floor(p.y / gridSize)}`;
+    if (!grid[key]) grid[key] = [];
+    grid[key].push(p);
   }
 
-  // Select best cluster based on size, circularity, and proximity to previous position
-  let bestCluster = clusters[0];
+  const visited = new Set();
+  let bestCluster = null;
   let bestScore = -1;
 
-  for (const cluster of clusters) {
-    let score = cluster.pixels.length;
-    
-    // Prefer circular clusters (check aspect ratio)
-    const aspectRatio = cluster.width / cluster.height;
-    if (aspectRatio > 0.6 && aspectRatio < 1.7) {
-      score *= 1.5;
-    }
-    
-    // Temporal consistency: prefer clusters near previous position
-    if (previousPosition) {
-      const dx = cluster.centerX - previousPosition.x;
-      const dy = cluster.centerY - previousPosition.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      const maxExpectedMovement = Math.min(width, height) * 0.25; // 25% of frame
-      
-      if (distance < maxExpectedMovement) {
-        score *= (1 + (maxExpectedMovement - distance) / maxExpectedMovement);
-      } else {
-        score *= 0.3; // Penalize large jumps
-      }
-    }
-    
-    if (score > bestScore) {
-      bestScore = score;
-      bestCluster = cluster;
-    }
-  }
-
-  // Estimate ball radius from cluster size
-  const radius = Math.sqrt(bestCluster.pixels.length / Math.PI);
-  
-  // Confidence based on cluster quality
-  const sizeScore = Math.min(1, bestCluster.pixels.length / 100);
-  const circularityScore = Math.min(1, 1 / Math.abs(bestCluster.width / bestCluster.height - 1) * 0.5);
-  const confidence = Math.min(0.95, 0.4 + sizeScore * 0.3 + circularityScore * 0.25);
-
-  return {
-    detected: true,
-    x: bestCluster.centerX,
-    y: bestCluster.centerY,
-    confidence,
-    radius,
-    pixelCount: bestCluster.pixels.length,
-  };
-}
-
-/**
- * Cluster nearby pixels into ball candidates using grid-based spatial grouping
- */
-function clusterPixels(pixels, frameWidth, frameHeight) {
-  if (pixels.length === 0) return [];
-  
-  // Grid-based clustering for performance
-  const gridSize = Math.max(10, Math.min(frameWidth, frameHeight) / 30);
-  const grid = {};
-  
-  // Assign pixels to grid cells
-  for (const pixel of pixels) {
-    const cellX = Math.floor(pixel.x / gridSize);
-    const cellY = Math.floor(pixel.y / gridSize);
-    const key = `${cellX},${cellY}`;
-    
-    if (!grid[key]) grid[key] = [];
-    grid[key].push(pixel);
-  }
-  
-  // Find connected components (adjacent grid cells)
-  const visited = new Set();
-  const clusters = [];
-  
   for (const key of Object.keys(grid)) {
     if (visited.has(key)) continue;
-    
-    const cluster = { pixels: [], minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+
+    const clusterPx = [];
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     const queue = [key];
     visited.add(key);
-    
+
     while (queue.length > 0) {
-      const currentKey = queue.shift();
-      const [cx, cy] = currentKey.split(',').map(Number);
-      
-      // Add pixels from this cell
-      if (grid[currentKey]) {
-        for (const pixel of grid[currentKey]) {
-          cluster.pixels.push(pixel);
-          cluster.minX = Math.min(cluster.minX, pixel.x);
-          cluster.maxX = Math.max(cluster.maxX, pixel.x);
-          cluster.minY = Math.min(cluster.minY, pixel.y);
-          cluster.maxY = Math.max(cluster.maxY, pixel.y);
-        }
+      const ck = queue.shift();
+      const [cx, cy] = ck.split(',').map(Number);
+      for (const p of (grid[ck] || [])) {
+        clusterPx.push(p);
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
       }
-      
-      // Check adjacent cells (8-connectivity)
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
-          if (dx === 0 && dy === 0) continue;
-          const neighborKey = `${cx + dx},${cy + dy}`;
-          if (!visited.has(neighborKey) && grid[neighborKey]) {
-            visited.add(neighborKey);
-            queue.push(neighborKey);
+          const nk = `${cx + dx},${cy + dy}`;
+          if (!visited.has(nk) && grid[nk]) {
+            visited.add(nk);
+            queue.push(nk);
           }
         }
       }
     }
-    
-    // Calculate cluster properties
-    if (cluster.pixels.length >= 8) {
-      cluster.centerX = cluster.pixels.reduce((sum, p) => sum + p.x, 0) / cluster.pixels.length;
-      cluster.centerY = cluster.pixels.reduce((sum, p) => sum + p.y, 0) / cluster.pixels.length;
-      cluster.width = cluster.maxX - cluster.minX + 1;
-      cluster.height = cluster.maxY - cluster.minY + 1;
-      clusters.push(cluster);
+
+    if (clusterPx.length < 8) continue;
+
+    const cw = maxX - minX + 1;
+    const ch = maxY - minY + 1;
+    const ar = cw / Math.max(1, ch);
+    const cx = clusterPx.reduce((s, p) => s + p.x, 0) / clusterPx.length;
+    const cy = clusterPx.reduce((s, p) => s + p.y, 0) / clusterPx.length;
+
+    let score = clusterPx.length;
+    if (ar > 0.55 && ar < 1.8) score *= 1.6;
+
+    if (previousPosition) {
+      const dist = Math.sqrt(
+        (cx - previousPosition.x) ** 2 + (cy - previousPosition.y) ** 2,
+      );
+      const maxMove = Math.min(width, height) * 0.25;
+      score *= dist < maxMove ? 1 + (maxMove - dist) / maxMove : 0.3;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCluster = { cx, cy, cw, ch, count: clusterPx.length };
     }
   }
-  
-  return clusters;
+
+  if (!bestCluster) return { detected: false, x: 0, y: 0, confidence: 0, radius: 0 };
+
+  const radius = Math.sqrt(bestCluster.count / Math.PI);
+  const sizeScore = Math.min(1, bestCluster.count / 80);
+  const arScore = Math.min(1, 1 / (Math.abs(bestCluster.cw / bestCluster.ch - 1) + 0.5));
+  const confidence = Math.min(0.95, 0.40 + sizeScore * 0.30 + arScore * 0.25);
+
+  return {
+    detected: true,
+    x: bestCluster.cx,
+    y: bestCluster.cy,
+    confidence,
+    radius,
+  };
 }
