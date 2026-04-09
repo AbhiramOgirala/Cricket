@@ -40,6 +40,10 @@ export const COLORS = {
   review: '#ffd700',
   review_glow: 'rgba(255,215,0,0.2)',
 
+  // Speed - Cyan
+  speed: '#00bcd4',
+  speed_glow: 'rgba(0,188,212,0.2)',
+
   // Text
   text_primary: '#ffffff',
   text_secondary: '#94a3b8',
@@ -64,67 +68,78 @@ export const COLORS = {
   out: '#ff1744',
 };
 
-// ─── CRICKET CONSTANTS ───────────────────────────────────────────────────────
+// ─── CRICKET CONSTANTS (IPL 2024/2025 Rules) ─────────────────────────────────
 export const CRICKET = {
   BALLS_PER_OVER: 6,
-  MAX_BOUNCES_PER_OVER: 1, // One bouncer allowed per over (ICC rule)
-  WIDE_THRESHOLD: 0.35, // 35% of stump width outside stump line
-  NO_BALL_HEIGHT_RATIO: 0.85, // Ball above 85% of batsman height = no-ball
-  BOUNCE_HEIGHT_RATIO: 0.65, // Bounce above 65% = chest height
-  MIN_DETECTION_CONFIDENCE: 0.60, // Minimum confidence to trigger detection
-  WIDE_CONFIDENCE: 0.72, // Base confidence for wide detection
-  NO_BALL_CONFIDENCE: 0.68, // Base confidence for no-ball height
-  BOUNCE_CONFIDENCE: 0.55, // Base confidence for bounce detection
-  LBW_CONFIDENCE: 0.55, // Minimum confidence for LBW decision
 
-  // IPL Review rules
-  REVIEWS_PER_TEAM: 2, // Each team gets 2 reviews per innings
-  REVIEW_RESTORE_ON_CORRECT: true, // Review NOT restored on successful challenge (IPL rule)
+  // IPL 2024: 2 short-pitched deliveries allowed per over (changed from 1)
+  MAX_BOUNCES_PER_OVER: 2,
+
+  // Wide threshold: 35% of stump width outside stump line
+  WIDE_THRESHOLD: 0.35,
+
+  // Height detection thresholds
+  NO_BALL_HEIGHT_RATIO: 0.85,   // Ball above 85% of batsman height = no-ball (shoulder)
+  BOUNCE_HEIGHT_RATIO: 0.65,    // Bounce above 65% = chest height
+
+  // Detection confidence thresholds
+  MIN_DETECTION_CONFIDENCE: 0.60,
+  WIDE_CONFIDENCE: 0.72,
+  NO_BALL_CONFIDENCE: 0.68,
+  BOUNCE_CONFIDENCE: 0.55,
+  LBW_CONFIDENCE: 0.55,
+
+  // IPL DRS rules
+  REVIEWS_PER_TEAM: 2,             // Each team gets 2 reviews per innings
+  REVIEW_RESTORE_ON_CORRECT: false, // IPL: review NOT restored on success
+
+  // Average batsman height for display (cm)
+  AVG_BATSMAN_HEIGHT_CM: 175,
 };
 
 // ─── BALL OUTCOMES ──────────────────────────────────────────────────────────
 export const BALL_OUTCOMES = {
-  DOT: 'dot',
-  ONE: '1',
-  TWO: '2',
-  THREE: '3',
-  FOUR: '4',
-  SIX: '6',
-  WIDE: 'wide',
+  DOT:     'dot',
+  ONE:     '1',
+  TWO:     '2',
+  THREE:   '3',
+  FOUR:    '4',
+  SIX:     '6',
+  WIDE:    'wide',
   NO_BALL: 'no_ball',
-  WICKET: 'wicket',
-  LBW: 'lbw',
-  BYE: 'bye',
+  WICKET:  'wicket',
+  LBW:     'lbw',
+  BYE:     'bye',
   LEG_BYE: 'leg_bye',
 };
 
 export const OUTCOME_COLORS = {
-  [BALL_OUTCOMES.DOT]: COLORS.dot_ball,
-  [BALL_OUTCOMES.ONE]: COLORS.single,
-  [BALL_OUTCOMES.TWO]: COLORS.double,
-  [BALL_OUTCOMES.THREE]: COLORS.triple,
-  [BALL_OUTCOMES.FOUR]: COLORS.four,
-  [BALL_OUTCOMES.SIX]: COLORS.six,
-  [BALL_OUTCOMES.WIDE]: COLORS.wide,
+  [BALL_OUTCOMES.DOT]:     COLORS.dot_ball,
+  [BALL_OUTCOMES.ONE]:     COLORS.single,
+  [BALL_OUTCOMES.TWO]:     COLORS.double,
+  [BALL_OUTCOMES.THREE]:   COLORS.triple,
+  [BALL_OUTCOMES.FOUR]:    COLORS.four,
+  [BALL_OUTCOMES.SIX]:     COLORS.six,
+  [BALL_OUTCOMES.WIDE]:    COLORS.wide,
   [BALL_OUTCOMES.NO_BALL]: COLORS.no_ball,
-  [BALL_OUTCOMES.WICKET]: COLORS.wicket,
-  [BALL_OUTCOMES.LBW]: COLORS.lbw,
-  [BALL_OUTCOMES.BYE]: COLORS.info,
+  [BALL_OUTCOMES.WICKET]:  COLORS.wicket,
+  [BALL_OUTCOMES.LBW]:     COLORS.lbw,
+  [BALL_OUTCOMES.BYE]:     COLORS.info,
   [BALL_OUTCOMES.LEG_BYE]: COLORS.info_dim,
 };
 
 export const OUTCOME_RUNS = {
-  [BALL_OUTCOMES.DOT]: 0,
-  [BALL_OUTCOMES.ONE]: 1,
-  [BALL_OUTCOMES.TWO]: 2,
-  [BALL_OUTCOMES.THREE]: 3,
-  [BALL_OUTCOMES.FOUR]: 4,
-  [BALL_OUTCOMES.SIX]: 6,
-  [BALL_OUTCOMES.WIDE]: 1,
+  [BALL_OUTCOMES.DOT]:     0,
+  [BALL_OUTCOMES.ONE]:     1,
+  [BALL_OUTCOMES.TWO]:     2,
+  [BALL_OUTCOMES.THREE]:   3,
+  [BALL_OUTCOMES.FOUR]:    4,
+  [BALL_OUTCOMES.SIX]:     6,
+  [BALL_OUTCOMES.WIDE]:    1,
   [BALL_OUTCOMES.NO_BALL]: 1,
-  [BALL_OUTCOMES.WICKET]: 0,
-  [BALL_OUTCOMES.LBW]: 0,
-  [BALL_OUTCOMES.BYE]: 1,
+  [BALL_OUTCOMES.WICKET]:  0,
+  [BALL_OUTCOMES.LBW]:     0,
+  [BALL_OUTCOMES.BYE]:     1,
   [BALL_OUTCOMES.LEG_BYE]: 1,
 };
 
@@ -132,35 +147,37 @@ export const EXTRA_BALL_OUTCOMES = [BALL_OUTCOMES.WIDE, BALL_OUTCOMES.NO_BALL];
 
 // ─── WICKET TYPES ────────────────────────────────────────────────────────────
 export const WICKET_TYPES = {
-  BOWLED: 'Bowled',
-  CAUGHT: 'Caught',
-  RUN_OUT: 'Run Out',
-  STUMPED: 'Stumped',
-  LBW: 'LBW',
+  BOWLED:     'Bowled',
+  CAUGHT:     'Caught',
+  RUN_OUT:    'Run Out',
+  STUMPED:    'Stumped',
+  LBW:        'LBW',
   HIT_WICKET: 'Hit Wicket',
-  RETIRED: 'Retired',
+  RETIRED:    'Retired',
 };
 
 // ─── REVIEW OUTCOMES ─────────────────────────────────────────────────────────
 export const REVIEW_OUTCOMES = {
-  UPHELD: 'upheld',      // Original decision reversed (batting team wins review for wicket)
-  OVERTURNED: 'overturned', // Decision overturned (review successful)
-  UMPIRES_CALL: 'umpires_call', // DRS umpire's call - review NOT lost
-  FAILED: 'failed',     // Review failed, team loses review
+  UPHELD:       'upheld',        // Original decision stands
+  OVERTURNED:   'overturned',    // Decision overturned (review successful)
+  UMPIRES_CALL: 'umpires_call',  // Marginal — original stands, review RETAINED (LBW only in IPL)
+  FAILED:       'failed',        // Review failed, team loses review
 };
 
-// Which outcomes can be reviewed
+// Which outcomes can be reviewed (IPL 2024 expanded DRS)
 export const REVIEWABLE_OUTCOMES = [
   BALL_OUTCOMES.WICKET,
   BALL_OUTCOMES.LBW,
   BALL_OUTCOMES.WIDE,
+  BALL_OUTCOMES.NO_BALL, // IPL 2024: height no-balls can be reviewed
 ];
 
 // ─── DETECTION ALERT TYPES ──────────────────────────────────────────────────
 export const ALERT_TYPES = {
-  WIDE_DETECTED: 'wide_detected',
+  WIDE_DETECTED:  'wide_detected',
   NO_BALL_HEIGHT: 'no_ball_height',
   NO_BALL_BOUNCE: 'no_ball_bounce',
   BOUNCE_WARNING: 'bounce_warning',
-  LBW_POSSIBLE: 'lbw_possible',
+  LBW_POSSIBLE:   'lbw_possible',
+  SPEED_INFO:     'speed_info',
 };

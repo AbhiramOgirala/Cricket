@@ -19,6 +19,7 @@ const initialBall = {
   replayViewed: false,
   isBounce: false,
   lbwData: null,
+  heightData: null,
   detectionFlags: {
     wideDetected: false,
     noBallHeightDetected: false,
@@ -29,12 +30,7 @@ const initialBall = {
 
 /**
  * Create fresh reviews state for an innings.
- *
- * IPL Rules:
- *  - Each team gets CRICKET.REVIEWS_PER_TEAM (2) reviews per innings
- *  - This means each team uses up to 2 per innings × 2 innings = 4 total
- *  - Reviews are RESET at the start of the second innings
- *  - Reviews are NOT carried over between innings
+ * IPL: 2 reviews per team per innings.
  */
 function createReviewsState(team1Id, team2Id) {
   return {
@@ -77,7 +73,7 @@ const initialState = {
       batsmanStats: {},
       bowlerStats: {},
       fallOfWickets: [],
-      reviews: {},   // populated on setupMatch
+      reviews: {},
       isComplete: false,
     },
   ],
@@ -103,19 +99,18 @@ const matchSlice = createSlice({
     // ── SETUP ──────────────────────────────────────────────────────────────
     setupMatch: (state, action) => {
       const { matchId, matchName, team1, team2, totalOvers, tossWinner, battingFirst } = action.payload;
-      state.matchId   = matchId;
-      state.matchName = matchName;
-      state.team1     = team1;
-      state.team2     = team2;
+      state.matchId    = matchId;
+      state.matchName  = matchName;
+      state.team1      = team1;
+      state.team2      = team2;
       state.totalOvers = totalOvers;
-      state.status    = 'innings1';
+      state.status     = 'innings1';
 
       const battingTeamId = battingFirst;
       const bowlingTeamId = battingFirst === team1.id ? team2.id : team1.id;
       state.battingTeamId = battingTeamId;
       state.bowlingTeamId = bowlingTeamId;
 
-      // Each team gets REVIEWS_PER_TEAM reviews for innings 1
       state.innings[0].battingTeamId = battingTeamId;
       state.innings[0].bowlingTeamId = bowlingTeamId;
       state.innings[0].reviews = createReviewsState(team1.id, team2.id);
@@ -127,14 +122,10 @@ const matchSlice = createSlice({
       innings.currentBatsmen = { striker, nonStriker };
 
       if (striker && !innings.batsmanStats[striker.id]) {
-        innings.batsmanStats[striker.id] = {
-          runs: 0, balls: 0, fours: 0, sixes: 0, isOut: false, dotBalls: 0,
-        };
+        innings.batsmanStats[striker.id] = { runs: 0, balls: 0, fours: 0, sixes: 0, isOut: false, dotBalls: 0 };
       }
       if (nonStriker && !innings.batsmanStats[nonStriker.id]) {
-        innings.batsmanStats[nonStriker.id] = {
-          runs: 0, balls: 0, fours: 0, sixes: 0, isOut: false, dotBalls: 0,
-        };
+        innings.batsmanStats[nonStriker.id] = { runs: 0, balls: 0, fours: 0, sixes: 0, isOut: false, dotBalls: 0 };
       }
     },
 
@@ -142,12 +133,8 @@ const matchSlice = createSlice({
       const bowler = action.payload;
       const innings = state.innings[state.currentInningsIndex];
       innings.currentBowler = bowler;
-
       if (bowler && !innings.bowlerStats[bowler.id]) {
-        innings.bowlerStats[bowler.id] = {
-          overs: 0, balls: 0, runs: 0, wickets: 0,
-          wides: 0, noBalls: 0, maidens: 0,
-        };
+        innings.bowlerStats[bowler.id] = { overs: 0, balls: 0, runs: 0, wickets: 0, wides: 0, noBalls: 0, maidens: 0 };
       }
     },
 
@@ -161,6 +148,7 @@ const matchSlice = createSlice({
         batsmanId,
         bowlerId,
         lbwData        = null,
+        heightData     = null,
       } = action.payload;
 
       const innings     = state.innings[state.currentInningsIndex];
@@ -181,29 +169,30 @@ const matchSlice = createSlice({
         outcome,
         runs,
         isExtra,
-        extraType: isExtra ? outcome : null,
+        extraType:  isExtra ? outcome : null,
         isWicket,
         wicketType: isWicket
           ? (outcome === BALL_OUTCOMES.LBW ? 'LBW' : wicketType)
           : null,
         batsmanId,
         bowlerId,
-        timestamp: new Date().toISOString(),
+        timestamp:       new Date().toISOString(),
         replayUri,
         replayAvailable: !!replayUri,
-        isBounce: detectionFlags.isBounce || false,
+        isBounce:        detectionFlags.isBounce || false,
         lbwData,
+        heightData,
         detectionFlags,
       };
 
       currentOver.balls.push(ball);
       currentOver.totalRuns += runs;
       if (ball.isBounce) currentOver.bounces += 1;
-      if (!isExtra) currentOver.legalBalls += 1;
+      if (!isExtra)      currentOver.legalBalls += 1;
 
       innings.totalRuns += runs;
 
-      // ── Second innings win condition check ─────────────────────────────
+      // ── Second innings win check ──
       if (state.currentInningsIndex === 1) {
         const target = state.innings[0].totalRuns + 1;
         if (innings.totalRuns >= target) {
@@ -219,13 +208,13 @@ const matchSlice = createSlice({
         }
       }
 
-      // ── Extras ─────────────────────────────────────────────────────────
+      // ── Extras ──
       if (outcome === BALL_OUTCOMES.WIDE)    innings.extras.wides   += 1;
       if (outcome === BALL_OUTCOMES.NO_BALL) innings.extras.noBalls += 1;
       if (outcome === BALL_OUTCOMES.BYE)     innings.extras.byes    += 1;
       if (outcome === BALL_OUTCOMES.LEG_BYE) innings.extras.legByes += 1;
 
-      // ── Batsman stats ───────────────────────────────────────────────────
+      // ── Batsman stats ──
       const strikerStats = innings.batsmanStats[batsmanId];
       if (strikerStats && !isExtra) {
         strikerStats.balls += 1;
@@ -235,29 +224,29 @@ const matchSlice = createSlice({
           if (outcome === BALL_OUTCOMES.SIX)  strikerStats.sixes += 1;
           if (runs === 0) strikerStats.dotBalls += 1;
         } else {
-          strikerStats.isOut     = true;
+          strikerStats.isOut      = true;
           strikerStats.wicketType = outcome === BALL_OUTCOMES.LBW ? 'LBW' : wicketType;
-          innings.totalWickets  += 1;
+          innings.totalWickets   += 1;
           innings.fallOfWickets.push({
             wicketNumber: innings.totalWickets,
-            runs: innings.totalRuns,
-            over: `${currentOver.overNumber}.${currentOver.legalBalls}`,
+            runs:         innings.totalRuns,
+            over:         `${currentOver.overNumber}.${currentOver.legalBalls}`,
             batsmanId,
           });
         }
       }
 
-      // ── Bowler stats ────────────────────────────────────────────────────
+      // ── Bowler stats ──
       const bowlerStat = innings.bowlerStats[bowlerId];
       if (bowlerStat) {
         bowlerStat.runs += runs;
-        if (outcome === BALL_OUTCOMES.WIDE)    bowlerStat.wides   += 1;
+        if (outcome === BALL_OUTCOMES.WIDE)         bowlerStat.wides   += 1;
         else if (outcome === BALL_OUTCOMES.NO_BALL) bowlerStat.noBalls += 1;
-        else                                    bowlerStat.balls   += 1;
+        else                                        bowlerStat.balls   += 1;
         if (isWicket) bowlerStat.wickets += 1;
       }
 
-      // ── Strike rotation ─────────────────────────────────────────────────
+      // ── Strike rotation ──
       if (!isExtra && !isWicket && (runs === 1 || runs === 3)) {
         const temp = innings.currentBatsmen.striker;
         innings.currentBatsmen.striker    = innings.currentBatsmen.nonStriker;
@@ -268,7 +257,7 @@ const matchSlice = createSlice({
       state.replayUri = replayUri;
       state.replayAvailableUntilNextBall = !!replayUri;
 
-      // ── Over complete ───────────────────────────────────────────────────
+      // ── Over complete ──
       if (currentOver.legalBalls >= 6) {
         currentOver.isComplete = true;
 
@@ -278,7 +267,6 @@ const matchSlice = createSlice({
           if (currentOver.totalRuns === 0) bowlerStat.maidens += 1;
         }
 
-        // End-of-over strike swap
         const temp = innings.currentBatsmen.striker;
         innings.currentBatsmen.striker    = innings.currentBatsmen.nonStriker;
         innings.currentBatsmen.nonStriker = temp;
@@ -293,47 +281,36 @@ const matchSlice = createSlice({
           innings.isComplete = true;
 
           if (state.currentInningsIndex === 0) {
-            // ── Start innings 2 ─────────────────────────────────────────
+            // Start innings 2
             state.currentInningsIndex = 1;
             state.status = 'innings2';
 
-            // Fresh reviews for innings 2 — each team gets REVIEWS_PER_TEAM again
             const innings2Reviews = createReviewsState(state.team1.id, state.team2.id);
 
             state.innings.push({
               inningsNumber: 2,
               battingTeamId: innings.bowlingTeamId,
               bowlingTeamId: innings.battingTeamId,
-              totalRuns: 0,
-              totalWickets: 0,
+              totalRuns: 0, totalWickets: 0,
               extras: { wides: 0, noBalls: 0, byes: 0, legByes: 0 },
               overs: [],
-              currentOver: {
-                overNumber: 1,
-                balls: [],
-                legalBalls: 0,
-                totalRuns: 0,
-                bounces: 0,
-                isComplete: false,
-              },
+              currentOver: { overNumber: 1, balls: [], legalBalls: 0, totalRuns: 0, bounces: 0, isComplete: false },
               currentBatsmen: { striker: null, nonStriker: null },
               currentBowler: null,
-              batsmanStats: {},
-              bowlerStats: {},
+              batsmanStats: {}, bowlerStats: {},
               fallOfWickets: [],
-              reviews: innings2Reviews,  // ← Fresh 2 reviews per team for innings 2
+              reviews: innings2Reviews,
               isComplete: false,
             });
           } else {
-            // ── Match complete ───────────────────────────────────────────
+            // Match complete
             state.status = 'complete';
             const inn1 = state.innings[0];
             const inn2 = state.innings[1];
-
             if (inn2.totalRuns > inn1.totalRuns) {
               const team = inn2.battingTeamId === state.team1.id ? state.team1 : state.team2;
-              const wicketsLeft = (team.players.length - 1) - inn2.totalWickets;
-              state.result = `${team.name} won by ${wicketsLeft} wicket${wicketsLeft !== 1 ? 's' : ''}`;
+              const wl   = (team.players.length - 1) - inn2.totalWickets;
+              state.result = `${team.name} won by ${wl} wicket${wl !== 1 ? 's' : ''}`;
             } else if (inn1.totalRuns > inn2.totalRuns) {
               const team = inn1.battingTeamId === state.team1.id ? state.team1 : state.team2;
               state.result = `${team.name} won by ${inn1.totalRuns - inn2.totalRuns} runs`;
@@ -342,25 +319,14 @@ const matchSlice = createSlice({
             }
           }
         } else {
-          // ── Next over ────────────────────────────────────────────────────
-          innings.currentOver = {
-            overNumber: currentOver.overNumber + 1,
-            balls: [],
-            legalBalls: 0,
-            totalRuns: 0,
-            bounces: 0,
-            isComplete: false,
-          };
+          innings.currentOver = { overNumber: currentOver.overNumber + 1, balls: [], legalBalls: 0, totalRuns: 0, bounces: 0, isComplete: false };
           innings.currentBowler = null;
         }
       }
     },
 
-    // ── REVIEWS ───────────────────────────────────────────────────────────
-    /**
-     * Initiate a DRS review.
-     * reviewType: 'wicket' | 'wide' | 'lbw'
-     */
+    // ── REVIEWS ────────────────────────────────────────────────────────────
+
     initiateReview: (state, action) => {
       const { reviewingTeamId, reviewingTeamName, reviewType, lastBall } = action.payload;
       const innings     = state.innings[state.currentInningsIndex];
@@ -374,20 +340,22 @@ const matchSlice = createSlice({
         reviewType,
         ballId:          lastBall?.id,
         lbwData:         lastBall?.lbwData || null,
+        heightData:      lastBall?.heightData || null,
         originalOutcome: lastBall?.outcome,
       };
     },
 
     /**
-     * Resolve the pending review.
+     * Resolve a pending review.
      *
-     * IPL Rule summary:
-     *  - Review LOST on success (OVERTURNED) — review not given back
-     *  - Review LOST on failure (FAILED)
+     * IPL rules:
+     *  - Review LOST on OVERTURNED (success) — not given back
+     *  - Review LOST on FAILED
      *  - Review RETAINED on Umpire's Call (LBW only)
+     *  - If umpireOverride = true, the umpire ignores DRS and sticks with original (review still used)
      */
     resolveReview: (state, action) => {
-      const { outcome, reviewingTeamId } = action.payload;
+      const { outcome, reviewingTeamId, umpireOverride = false } = action.payload;
       const innings = state.innings[state.currentInningsIndex];
       const review  = state.pendingReview;
       if (!review) return;
@@ -397,12 +365,13 @@ const matchSlice = createSlice({
 
       teamReviews.history.push({
         outcome,
+        umpireOverride,
         reviewType: review.reviewType,
         ballId:     review.ballId,
         timestamp:  new Date().toISOString(),
       });
 
-      // IPL rule: review retained ONLY for Umpire's Call on LBW
+      // IPL: review retained ONLY on Umpire's Call for LBW
       const isUmpireCallLBW =
         outcome === REVIEW_OUTCOMES.UMPIRES_CALL && review.reviewType === 'lbw';
 
@@ -411,23 +380,20 @@ const matchSlice = createSlice({
         teamReviews.used     += 1;
       }
 
-      // Apply outcome to match state
-      if (outcome === REVIEW_OUTCOMES.OVERTURNED) {
+      // Apply result to match state (unless umpire overrode DRS)
+      if (!umpireOverride && outcome === REVIEW_OUTCOMES.OVERTURNED) {
         if (review.reviewType === 'wicket' || review.reviewType === 'lbw') {
           if (innings.totalWickets > 0) {
             innings.totalWickets -= 1;
             innings.fallOfWickets.pop();
-            // Find the ball in current over
-            const reviewedBall = innings.currentOver.balls.find(
-              (b) => b.id === review.ballId,
-            );
+            const reviewedBall = innings.currentOver.balls.find((b) => b.id === review.ballId);
             if (reviewedBall?.batsmanId && innings.batsmanStats[reviewedBall.batsmanId]) {
-              innings.batsmanStats[reviewedBall.batsmanId].isOut       = false;
-              innings.batsmanStats[reviewedBall.batsmanId].wicketType  = null;
+              innings.batsmanStats[reviewedBall.batsmanId].isOut      = false;
+              innings.batsmanStats[reviewedBall.batsmanId].wicketType = null;
             }
           }
         } else if (review.reviewType === 'wide') {
-          if (innings.totalRuns > 0)   innings.totalRuns    -= 1;
+          if (innings.totalRuns > 0)    innings.totalRuns    -= 1;
           if (innings.extras.wides > 0) innings.extras.wides -= 1;
         }
       }
@@ -451,7 +417,6 @@ const matchSlice = createSlice({
       if (state.lastBall) state.lastBall.replayViewed = true;
     },
 
-    // ── RESET ─────────────────────────────────────────────────────────────
     resetMatch: () => initialState,
   },
 });
@@ -472,21 +437,21 @@ export const {
 } = matchSlice.actions;
 
 // ── SELECTORS ────────────────────────────────────────────────────────────────
-export const selectCurrentInnings    = (state) => state.match.innings[state.match.currentInningsIndex];
-export const selectCurrentOver       = (state) => selectCurrentInnings(state)?.currentOver;
-export const selectTotalRuns         = (state) => selectCurrentInnings(state)?.totalRuns     || 0;
-export const selectTotalWickets      = (state) => selectCurrentInnings(state)?.totalWickets  || 0;
-export const selectOversCompleted    = (state) => selectCurrentInnings(state)?.overs.length  || 0;
-export const selectLegalBallsInOver  = (state) => selectCurrentOver(state)?.legalBalls       || 0;
-export const selectBouncesInOver     = (state) => selectCurrentOver(state)?.bounces           || 0;
-export const selectLastBall          = (state) => state.match.lastBall;
-export const selectReplayAvailable   = (state) => state.match.replayAvailableUntilNextBall;
-export const selectReplayUri         = (state) => state.match.replayUri;
-export const selectMatch             = (state) => state.match;
-export const selectAlerts            = (state) => state.match.pendingAlerts;
-export const selectBatsmanStats      = (state) => selectCurrentInnings(state)?.batsmanStats  || {};
-export const selectBowlerStats       = (state) => selectCurrentInnings(state)?.bowlerStats   || {};
-export const selectReviews           = (state) => selectCurrentInnings(state)?.reviews        || {};
-export const selectPendingReview     = (state) => state.match.pendingReview;
+export const selectCurrentInnings   = (state) => state.match.innings[state.match.currentInningsIndex];
+export const selectCurrentOver      = (state) => selectCurrentInnings(state)?.currentOver;
+export const selectTotalRuns        = (state) => selectCurrentInnings(state)?.totalRuns     || 0;
+export const selectTotalWickets     = (state) => selectCurrentInnings(state)?.totalWickets  || 0;
+export const selectOversCompleted   = (state) => selectCurrentInnings(state)?.overs.length  || 0;
+export const selectLegalBallsInOver = (state) => selectCurrentOver(state)?.legalBalls       || 0;
+export const selectBouncesInOver    = (state) => selectCurrentOver(state)?.bounces           || 0;
+export const selectLastBall         = (state) => state.match.lastBall;
+export const selectReplayAvailable  = (state) => state.match.replayAvailableUntilNextBall;
+export const selectReplayUri        = (state) => state.match.replayUri;
+export const selectMatch            = (state) => state.match;
+export const selectAlerts           = (state) => state.match.pendingAlerts;
+export const selectBatsmanStats     = (state) => selectCurrentInnings(state)?.batsmanStats  || {};
+export const selectBowlerStats      = (state) => selectCurrentInnings(state)?.bowlerStats   || {};
+export const selectReviews          = (state) => selectCurrentInnings(state)?.reviews        || {};
+export const selectPendingReview    = (state) => state.match.pendingReview;
 
 export default matchSlice.reducer;
