@@ -25,12 +25,15 @@ const initialBall = {
     noBallHeightDetected: false,
     noBallBounceDetected: false,
     lbwPossible: false,
+    edgeDetected: false,
+    edgeConfidence: 0,
   },
 };
 
 /**
  * Create fresh reviews state for an innings.
- * IPL: 2 reviews per team per innings.
+ * IPL: EXACTLY 2 reviews per team per innings, never more.
+ * Once both are used, no more reviews allowed.
  */
 function createReviewsState(team1Id, team2Id) {
   return {
@@ -149,6 +152,7 @@ const matchSlice = createSlice({
         bowlerId,
         lbwData        = null,
         heightData     = null,
+        audioAnalysis  = null,
       } = action.payload;
 
       const innings     = state.innings[state.currentInningsIndex];
@@ -182,7 +186,12 @@ const matchSlice = createSlice({
         isBounce:        detectionFlags.isBounce || false,
         lbwData,
         heightData,
-        detectionFlags,
+        audioAnalysis,
+        detectionFlags: {
+          ...detectionFlags,
+          edgeDetected:   audioAnalysis?.edgeDetected   || false,
+          edgeConfidence: audioAnalysis?.edgeConfidence || 0,
+        },
       };
 
       currentOver.balls.push(ball);
@@ -284,7 +293,6 @@ const matchSlice = createSlice({
             // Start innings 2
             state.currentInningsIndex = 1;
             state.status = 'innings2';
-
             const innings2Reviews = createReviewsState(state.team1.id, state.team2.id);
 
             state.innings.push({
@@ -326,13 +334,23 @@ const matchSlice = createSlice({
     },
 
     // ── REVIEWS ────────────────────────────────────────────────────────────
-
+    /**
+     * IPL Rules (strict):
+     * - Each team gets EXACTLY 2 reviews per innings.
+     * - reviews.remaining starts at 2 and can never go above 2.
+     * - Review RETAINED only on Umpire's Call for LBW.
+     * - No review if remaining === 0.
+     */
     initiateReview: (state, action) => {
       const { reviewingTeamId, reviewingTeamName, reviewType, lastBall } = action.payload;
       const innings     = state.innings[state.currentInningsIndex];
-      const teamReviews = innings.reviews[reviewingTeamId];
+      const teamReviews = innings.reviews?.[reviewingTeamId];
 
+      // STRICT: must have remaining reviews (no negative, no overflow)
       if (!teamReviews || teamReviews.remaining <= 0) return;
+
+      // Cannot review if already have a pending review
+      if (state.pendingReview) return;
 
       state.pendingReview = {
         teamId:          reviewingTeamId,
@@ -341,6 +359,7 @@ const matchSlice = createSlice({
         ballId:          lastBall?.id,
         lbwData:         lastBall?.lbwData || null,
         heightData:      lastBall?.heightData || null,
+        audioAnalysis:   lastBall?.audioAnalysis || null,
         originalOutcome: lastBall?.outcome,
       };
     },
@@ -348,11 +367,12 @@ const matchSlice = createSlice({
     /**
      * Resolve a pending review.
      *
-     * IPL rules:
-     *  - Review LOST on OVERTURNED (success) — not given back
+     * IPL rules (strict):
+     *  - Review LOST on OVERTURNED (success)
      *  - Review LOST on FAILED
      *  - Review RETAINED on Umpire's Call (LBW only)
-     *  - If umpireOverride = true, the umpire ignores DRS and sticks with original (review still used)
+     *  - remaining can never go below 0 or above initial CRICKET.REVIEWS_PER_TEAM
+     *  - If umpireOverride = true, umpire ignores DRS, review still consumed
      */
     resolveReview: (state, action) => {
       const { outcome, reviewingTeamId, umpireOverride = false } = action.payload;
@@ -360,8 +380,8 @@ const matchSlice = createSlice({
       const review  = state.pendingReview;
       if (!review) return;
 
-      const teamReviews = innings.reviews[reviewingTeamId];
-      if (!teamReviews) return;
+      const teamReviews = innings.reviews?.[reviewingTeamId];
+      if (!teamReviews) { state.pendingReview = null; return; }
 
       teamReviews.history.push({
         outcome,
@@ -376,8 +396,9 @@ const matchSlice = createSlice({
         outcome === REVIEW_OUTCOMES.UMPIRES_CALL && review.reviewType === 'lbw';
 
       if (!isUmpireCallLBW) {
+        // Consume exactly 1 review, never go below 0
         teamReviews.remaining = Math.max(0, teamReviews.remaining - 1);
-        teamReviews.used     += 1;
+        teamReviews.used = Math.min(CRICKET.REVIEWS_PER_TEAM, teamReviews.used + 1);
       }
 
       // Apply result to match state (unless umpire overrode DRS)
@@ -386,7 +407,11 @@ const matchSlice = createSlice({
           if (innings.totalWickets > 0) {
             innings.totalWickets -= 1;
             innings.fallOfWickets.pop();
-            const reviewedBall = innings.currentOver.balls.find((b) => b.id === review.ballId);
+            const allBalls = [
+              ...innings.overs.flatMap(o => o.balls),
+              ...innings.currentOver.balls,
+            ];
+            const reviewedBall = allBalls.find((b) => b.id === review.ballId);
             if (reviewedBall?.batsmanId && innings.batsmanStats[reviewedBall.batsmanId]) {
               innings.batsmanStats[reviewedBall.batsmanId].isOut      = false;
               innings.batsmanStats[reviewedBall.batsmanId].wicketType = null;

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  Dimensions, Alert
+  Dimensions, ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { VideoView, useVideoPlayer } from 'expo-video';
+import { useEventListener } from 'expo';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useDispatch, useSelector } from 'react-redux';
@@ -19,71 +20,58 @@ export default function ReplayScreen() {
   const params    = useLocalSearchParams();
   const lastBall  = useSelector(selectLastBall);
 
-  const [hasWatched, setHasWatched]     = useState(false);
-  const [isPlaying, setIsPlaying]       = useState(false);
-  const [videoError, setVideoError]     = useState(false);
-  const [videoReady, setVideoReady]     = useState(false);
+  const [hasWatched, setHasWatched]   = useState(false);
+  const [isPlaying, setIsPlaying]     = useState(false);
+  const [videoError, setVideoError]   = useState(false);
+  const [videoReady, setVideoReady]   = useState(false);
 
   const replayUri = params.uri || lastBall?.replayUri;
 
-  // Only initialise the player if we have a valid URI
-  const player = useVideoPlayer(replayUri || '', (p) => {
+  // Create player — always call the hook, but only feed URI if we have one
+  const player = useVideoPlayer(replayUri || null, (p) => {
     if (!replayUri) return;
-    p.loop   = false;
-    p.muted  = false;
+    p.loop  = false;
+    p.muted = false;
   });
 
+  // Use proper useEventListener from expo (SDK 55 pattern)
+  useEventListener(player, 'playingChange', ({ isPlaying: playing }) => {
+    setIsPlaying(playing);
+  });
+
+  useEventListener(player, 'statusChange', ({ status, error }) => {
+    if (status === 'readyToPlay') {
+      setVideoReady(true);
+      setVideoError(false);
+    }
+    if (status === 'error' || error) {
+      setVideoError(true);
+      setVideoReady(false);
+    }
+  });
+
+  // If no URI at all, show error immediately
   useEffect(() => {
-    // If no URI provided, show info and go back
     if (!replayUri) {
-      Alert.alert(
-        'No Replay Available',
-        'The ball was scored too quickly to record a replay, or camera permission was not granted.',
-        [{ text: 'OK', onPress: () => router.back() }],
-      );
+      setVideoError(true);
     }
   }, [replayUri]);
 
-  useEffect(() => {
-    if (!player || !replayUri) return;
-
-    // Listen for play state changes
-    const sub1 = player.addListener('playingChange', ({ isPlaying: playing }) => {
-      setIsPlaying(playing);
-      if (!playing && hasWatched) {
-        // Playback finished
-      }
-    });
-
-    // Listen for status to detect errors and readiness
-    const sub2 = player.addListener('statusChange', ({ status, error }) => {
-      if (status === 'readyToPlay') {
-        setVideoReady(true);
-        setVideoError(false);
-      }
-      if (status === 'error' || error) {
-        setVideoError(true);
-        setVideoReady(false);
-      }
-    });
-
-    return () => {
-      sub1.remove();
-      sub2.remove();
-    };
-  }, [player, replayUri]);
-
-  const handlePlay = () => {
+  const handlePlay = useCallback(() => {
     if (!player || !videoReady) return;
-    player.play();
-    setHasWatched(true);
-  };
+    try {
+      player.play();
+      setHasWatched(true);
+    } catch (e) {
+      setVideoError(true);
+    }
+  }, [player, videoReady]);
 
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     dispatch(markReplayViewed());
-    if (player) player.pause();
+    try { if (player) player.pause(); } catch (_) {}
     router.back();
-  };
+  }, [dispatch, player]);
 
   const outcomeColor = lastBall
     ? (OUTCOME_COLORS[lastBall.outcome] || COLORS.primary)
@@ -100,6 +88,7 @@ export default function ReplayScreen() {
       [BALL_OUTCOMES.WIDE]:    'Wide Ball',
       [BALL_OUTCOMES.NO_BALL]: 'No Ball! 🚨',
       [BALL_OUTCOMES.WICKET]:  'WICKET! 🏏',
+      [BALL_OUTCOMES.LBW]:     'LBW! 🏏',
     };
     return map[outcome] || outcome;
   };
@@ -114,7 +103,9 @@ export default function ReplayScreen() {
             <Ionicons name="close" size={26} color={COLORS.text_primary} />
           </TouchableOpacity>
           <Text style={styles.title}>🎬 Ball Replay</Text>
-          <View style={{ width: 44 }} />
+          <TouchableOpacity style={styles.settingsBtn}>
+            <Ionicons name="settings-outline" size={22} color={COLORS.text_muted} />
+          </TouchableOpacity>
         </View>
 
         {/* One-time notice */}
@@ -138,7 +129,7 @@ export default function ReplayScreen() {
               <Text style={styles.wicketTypeText}>{lastBall.wicketType}</Text>
             )}
 
-            {/* Detection summary */}
+            {/* Detection flags */}
             <View style={styles.flagsRow}>
               {lastBall.detectionFlags?.wideDetected && (
                 <View style={[styles.flag, { backgroundColor: COLORS.warning_glow, borderColor: COLORS.warning }]}>
@@ -151,9 +142,7 @@ export default function ReplayScreen() {
                   <Text style={[styles.flagText, { color: COLORS.danger }]}>
                     No Ball — {lastBall.detectionFlags.noBallBounceDetected
                       ? 'Short Pitch'
-                      : (lastBall.detectionFlags.noBallHeightDetected
-                          ? 'Waist-High FT'
-                          : 'Height')}
+                      : 'Height'}
                   </Text>
                 </View>
               )}
@@ -162,7 +151,19 @@ export default function ReplayScreen() {
                   <Text style={[styles.flagText, { color: COLORS.info }]}>Short Pitch</Text>
                 </View>
               )}
+              {lastBall.detectionFlags?.edgeDetected && (
+                <View style={[styles.flag, { backgroundColor: COLORS.lbw_glow, borderColor: COLORS.lbw }]}>
+                  <Text style={[styles.flagText, { color: COLORS.lbw }]}>Edge Detected 🎙️</Text>
+                </View>
+              )}
             </View>
+
+            {/* Speed & height */}
+            {lastBall.heightData?.speedKmh > 0 && (
+              <Text style={styles.speedText}>⚡ {lastBall.heightData.speedKmh} km/h
+                {lastBall.heightData.ballHeightLabel ? ` · ${lastBall.heightData.ballHeightLabel}` : ''}
+              </Text>
+            )}
           </View>
         )}
 
@@ -178,7 +179,7 @@ export default function ReplayScreen() {
               />
 
               {/* Play overlay — shown until first play */}
-              {!hasWatched && !isPlaying && (
+              {!hasWatched && !isPlaying && videoReady && (
                 <TouchableOpacity
                   style={styles.playOverlay}
                   onPress={handlePlay}
@@ -194,28 +195,23 @@ export default function ReplayScreen() {
                 </TouchableOpacity>
               )}
 
-              {/* Loading indicator before video is ready */}
-              {!videoReady && !hasWatched && (
+              {/* Loading — before video ready */}
+              {!videoReady && !hasWatched && !videoError && (
                 <View style={styles.loadingOverlay} pointerEvents="none">
-                  <Text style={styles.loadingText}>Loading video…</Text>
+                  <ActivityIndicator size="large" color={COLORS.primary} />
+                  <Text style={styles.loadingText}>Loading replay…</Text>
                 </View>
               )}
             </>
           ) : (
             /* No video / error fallback */
             <View style={styles.noVideoPlaceholder}>
-              <Ionicons
-                name={videoError ? 'warning-outline' : 'videocam-off'}
-                size={52}
-                color={COLORS.text_muted}
-              />
-              <Text style={styles.noVideoTitle}>
-                {videoError ? 'Video Unavailable' : 'No Replay Recorded'}
-              </Text>
+              <Ionicons name="warning-outline" size={52} color={COLORS.text_muted} />
+              <Text style={styles.noVideoTitle}>Video Unavailable</Text>
               <Text style={styles.noVideoText}>
-                {videoError
-                  ? 'The video file could not be loaded. This can happen if the file was too short or the recording failed.'
-                  : 'Score a ball while the camera is recording to capture a replay.'}
+                {!replayUri
+                  ? 'No replay was recorded for this ball. Score a ball while the camera is recording to capture a replay.'
+                  : 'The video file could not be loaded. This can happen if the file was too short or the recording failed.'}
               </Text>
             </View>
           )}
@@ -254,6 +250,10 @@ const styles = StyleSheet.create({
     width: 44, height: 44, borderRadius: 22,
     backgroundColor: COLORS.bg_card, alignItems: 'center', justifyContent: 'center',
   },
+  settingsBtn: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: COLORS.bg_card, alignItems: 'center', justifyContent: 'center',
+  },
   title: { fontSize: 18, fontWeight: '800', color: COLORS.text_primary },
 
   noticeBanner: {
@@ -271,6 +271,7 @@ const styles = StyleSheet.create({
   overBallText:   { fontSize: 11, color: COLORS.text_muted, fontWeight: '700', letterSpacing: 1 },
   outcomeLabel:   { fontSize: 24, fontWeight: '900' },
   wicketTypeText: { fontSize: 14, color: COLORS.text_secondary, fontWeight: '600' },
+  speedText:      { fontSize: 12, color: COLORS.speed, fontWeight: '700', marginTop: 4 },
   flagsRow:       { flexDirection: 'row', gap: 8, marginTop: 8, flexWrap: 'wrap' },
   flag: {
     paddingHorizontal: 10, paddingVertical: 4,
@@ -299,8 +300,8 @@ const styles = StyleSheet.create({
 
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    alignItems: 'center', justifyContent: 'center', gap: 12,
   },
   loadingText: { fontSize: 14, color: COLORS.text_secondary, fontWeight: '600' },
 

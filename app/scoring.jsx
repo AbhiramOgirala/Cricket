@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  Dimensions, Modal, Alert, ScrollView, Vibration,
+  Dimensions, Modal, Alert, Vibration,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
@@ -23,6 +23,7 @@ import {
 } from '../src/store/slices/detectionSlice';
 import { COLORS, BALL_OUTCOMES, OUTCOME_COLORS, CRICKET, WICKET_TYPES, REVIEW_OUTCOMES } from '../src/constants';
 import { analyzeBallDeliveryAuto, computeAdaptiveZones } from '../src/utils/autoDetection';
+import { startAudioCapture, stopAudioCapture, analyzeAudioForEdge, evaluateLBWWithAudio } from '../src/utils/audioEdgeDetection';
 import AlertBanner from '../src/components/game/AlertBanner';
 import BallHistory from '../src/components/game/BallHistory';
 import PlayerSelectModal from '../src/components/game/PlayerSelectModal';
@@ -45,18 +46,18 @@ const SCORING_BUTTONS = [
   { outcome: BALL_OUTCOMES.WICKET,  label: '🏏',  sublabel: 'Wicket!', color: COLORS.wicket },
 ];
 
-// ─── DELIVERY SIMULATION CONFIG ──────────────────────────────────────────────
+// ── DELIVERY SIMULATION CONFIG ────────────────────────────────────────────────
 // IPL 2024: 2 bouncers per over allowed
 const DELIVERY_TYPES = {
-  GOOD_LENGTH:          { weight: 48, hasBounce: true,  bounceHeightZone: 'waist', isWide: false },
-  BOUNCER_LEGAL:        { weight: 12, hasBounce: true,  bounceHeightZone: 'chest', isWide: false },
+  GOOD_LENGTH:          { weight: 46, hasBounce: true,  bounceHeightZone: 'waist', isWide: false },
+  BOUNCER_LEGAL:        { weight: 10, hasBounce: true,  bounceHeightZone: 'chest', isWide: false },
   BOUNCER_ILLEGAL:      { weight: 3,  hasBounce: true,  bounceHeightZone: 'head',  isWide: false },
   FULL_TOSS_LEGAL:      { weight: 10, hasBounce: false, fullTossHeight: 'hip',     isWide: false },
   WAIST_HIGH_FULL_TOSS: { weight: 3,  hasBounce: false, fullTossHeight: 'waist',   isWide: false },
   YORKER:               { weight: 9,  hasBounce: true,  bounceHeightZone: 'low',   isWide: false },
-  WIDE_OFF_SIDE:        { weight: 9,  hasBounce: true,  bounceHeightZone: 'waist', isWide: true, wideSide: 'off' },
-  WIDE_LEG_SIDE:        { weight: 4,  hasBounce: true,  bounceHeightZone: 'waist', isWide: true, wideSide: 'leg' },
-  SHORT_GOOD:           { weight: 2,  hasBounce: true,  bounceHeightZone: 'hip',   isWide: false },
+  WIDE_OFF_SIDE:        { weight: 11, hasBounce: true,  bounceHeightZone: 'waist', isWide: true, wideSide: 'off' },
+  WIDE_LEG_SIDE:        { weight: 5,  hasBounce: true,  bounceHeightZone: 'waist', isWide: true, wideSide: 'leg' },
+  SHORT_GOOD:           { weight: 3,  hasBounce: true,  bounceHeightZone: 'hip',   isWide: false },
 };
 
 function sampleDeliveryType() {
@@ -99,11 +100,9 @@ export default function ScoringScreen() {
   const [lastBallFlash,      setLastBallFlash]       = useState(null);
   const [showReviewModal,    setShowReviewModal]     = useState(false);
   const [lastAnalysisResult, setLastAnalysisResult] = useState(null);
-
-  // Speed display state
-  const [displaySpeed,   setDisplaySpeed]   = useState(null);
-  const [displayHeight,  setDisplayHeight]  = useState(null);
-  const speedTimerRef = useRef(null);
+  const [displaySpeed,       setDisplaySpeed]        = useState(null);
+  const [displayHeight,      setDisplayHeight]       = useState(null);
+  const [audioCapturing,     setAudioCapturing]      = useState(false);
 
   const ballTrajectoryRef     = useRef([]);
   const recordingRef          = useRef(null);
@@ -112,22 +111,24 @@ export default function ScoringScreen() {
   const deviceOrientationRef  = useRef({ alpha: 0, beta: 45, gamma: 0 });
   const recordingStartTimeRef = useRef(0);
   const deliveryTypeRef       = useRef(null);
+  const speedTimerRef         = useRef(null);
+  const audioStartedRef       = useRef(false);
 
   const battingTeam = match.battingTeamId === match.team1.id ? match.team1 : match.team2;
   const bowlingTeam = match.bowlingTeamId === match.team1.id ? match.team1 : match.team2;
 
-  // ── Permissions ────────────────────────────────────────────────────────────
+  // ── Permissions ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (permission?.granted && audioPermission?.granted) {
-      setPermissionGranted(true);
-    } else if (permission?.status === 'undetermined' || audioPermission?.status === 'undetermined') {
-      (async () => {
-        const c = await requestPermission();
-        const a = await requestAudioPermission();
-        if (c?.granted && a?.granted) setPermissionGranted(true);
-      })();
-    }
-  }, [permission, audioPermission]);
+    const checkAndRequest = async () => {
+      if (permission?.granted && audioPermission?.granted) {
+        setPermissionGranted(true);
+        return;
+      }
+      if (permission?.status === 'undetermined') await requestPermission();
+      if (audioPermission?.status === 'undetermined') await requestAudioPermission();
+    };
+    checkAndRequest();
+  }, []);
 
   useEffect(() => {
     if (permission?.granted && audioPermission?.granted) setPermissionGranted(true);
@@ -194,8 +195,8 @@ export default function ScoringScreen() {
     if (pendingReview) setShowReviewModal(true);
   }, [pendingReview]);
 
-  // ── Recording ──────────────────────────────────────────────────────────────
-  const startBallRecording = useCallback(() => {
+  // ── Recording ───────────────────────────────────────────────────────────────
+  const startBallRecording = useCallback(async () => {
     if (!cameraRef.current || !permissionGranted) return;
     try {
       setIsRecording(true);
@@ -204,10 +205,19 @@ export default function ScoringScreen() {
       deliveryTypeRef.current = null;
       recordingStartTimeRef.current = Date.now();
 
+      // Start camera recording
       const recordPromise = cameraRef.current.recordAsync
         ? cameraRef.current.recordAsync({ maxDuration: 8 })
         : cameraRef.current.record?.({ maxDuration: 8 });
       recordingRef.current = recordPromise;
+
+      // Start audio capture for edge detection
+      if (!audioStartedRef.current) {
+        audioStartedRef.current = true;
+        const audioStarted = await startAudioCapture();
+        setAudioCapturing(audioStarted);
+        if (!audioStarted) audioStartedRef.current = false;
+      }
     } catch (e) {
       console.warn('Recording start error:', e);
       setIsRecording(false);
@@ -215,24 +225,37 @@ export default function ScoringScreen() {
   }, [permissionGranted]);
 
   const stopBallRecording = useCallback(async () => {
-    if (!cameraRef.current || !isRecording) return null;
-    try {
-      if (cameraRef.current.stopRecording) cameraRef.current.stopRecording();
-      setIsRecording(false);
-      if (!recordingRef.current) return null;
-      const result = await recordingRef.current;
-      recordingRef.current = null;
-      let uri = result?.uri || null;
-      if (uri && !uri.startsWith('file://')) uri = `file://${uri}`;
-      return uri;
-    } catch (e) {
-      console.warn('Recording stop error:', e);
-      setIsRecording(false);
-      return null;
+    // Stop camera recording
+    let videoUri = null;
+    if (cameraRef.current && isRecording) {
+      try {
+        if (cameraRef.current.stopRecording) cameraRef.current.stopRecording();
+        setIsRecording(false);
+        if (recordingRef.current) {
+          const result = await recordingRef.current;
+          recordingRef.current = null;
+          let uri = result?.uri || null;
+          if (uri && !uri.startsWith('file://')) uri = `file://${uri}`;
+          videoUri = uri;
+        }
+      } catch (e) {
+        console.warn('Recording stop error:', e);
+        setIsRecording(false);
+      }
     }
+
+    // Stop audio capture
+    let audioSnapshot = [];
+    if (audioStartedRef.current) {
+      audioSnapshot = await stopAudioCapture() || [];
+      audioStartedRef.current = false;
+      setAudioCapturing(false);
+    }
+
+    return { videoUri, audioSnapshot };
   }, [isRecording]);
 
-  // ── Trajectory simulation ──────────────────────────────────────────────────
+  // ── Trajectory simulation ───────────────────────────────────────────────────
   const processCameraFrame = useCallback(async () => {
     if (!cameraRef.current || !isRecording || frameProcessingRef.current) return;
     frameProcessingRef.current = true;
@@ -248,7 +271,7 @@ export default function ScoringScreen() {
       // ── X position ──
       let xPos = zones.pitchCenterX;
       if (delivery.isWide) {
-        const wideDeviation = zones.wideThresholdPx * (1.30 + Math.random() * 0.4);
+        const wideDeviation = zones.wideThresholdPx * (1.35 + Math.random() * 0.4);
         xPos += delivery.wideSide === 'off' ? wideDeviation : -wideDeviation;
         xPos += (delivery.wideSide === 'off' ? 1 : -1) * width * 0.018 * progress;
       } else {
@@ -317,7 +340,7 @@ export default function ScoringScreen() {
     return () => clearInterval(interval);
   }, [isRecording, processCameraFrame]);
 
-  // ── Scoring ────────────────────────────────────────────────────────────────
+  // ── Scoring ─────────────────────────────────────────────────────────────────
   const handleReadyBall = () => {
     startBallRecording();
     dispatch(resetDetectionFlags());
@@ -346,7 +369,7 @@ export default function ScoringScreen() {
   };
 
   const commitBall = async (outcome, wicketType) => {
-    const replayUri = await stopBallRecording();
+    const { videoUri: replayUri, audioSnapshot } = await stopBallRecording();
     const trajectory = [...ballTrajectoryRef.current];
 
     // Pad sparse trajectory
@@ -362,6 +385,7 @@ export default function ScoringScreen() {
       }
     }
 
+    // ── Ball trajectory analysis ──
     const analysisResult = analyzeBallDeliveryAuto(
       trajectory,
       { bounceCount: bouncesInOver },
@@ -370,10 +394,31 @@ export default function ScoringScreen() {
       CAMERA_HEIGHT,
     );
 
-    lbwDataRef.current = analysisResult.lbwData;
-    setLastAnalysisResult(analysisResult);
+    // ── Audio edge detection (for LBW and wicket) ──
+    const audioAnalysis = analyzeAudioForEdge(audioSnapshot);
 
-    // Show speed & height
+    // ── Enhance LBW data with audio edge detection ──
+    let enhancedLbwData = analysisResult.lbwData;
+    if ((outcome === BALL_OUTCOMES.LBW || analysisResult.lbwPossible) && analysisResult.lbwData) {
+      enhancedLbwData = evaluateLBWWithAudio(audioAnalysis, analysisResult.lbwData);
+      // If edge detected with high confidence, LBW is invalid
+      if (enhancedLbwData.edgeDetected && enhancedLbwData.edgeConfidence > 0.65) {
+        if (outcome === BALL_OUTCOMES.LBW) {
+          // LBW called but edge detected — alert umpire
+          dispatch(addAlert({
+            id: `${Date.now()}-edge-lbw`,
+            type: 'edge_detected',
+            message: `🎙️ Bat edge detected (${Math.round(enhancedLbwData.edgeConfidence * 100)}% conf) — LBW questionable!`,
+            severity: 'warning',
+          }));
+        }
+      }
+    }
+
+    lbwDataRef.current = enhancedLbwData;
+    setLastAnalysisResult({ ...analysisResult, edgeDetected: audioAnalysis.edgeDetected, edgeConfidence: audioAnalysis.edgeConfidence });
+
+    // Speed display
     if (analysisResult.speedKmh > 0) {
       setDisplaySpeed(analysisResult.speedKmh);
       if (speedTimerRef.current) clearTimeout(speedTimerRef.current);
@@ -387,9 +432,11 @@ export default function ScoringScreen() {
       });
     }
 
-    // ── Alert generation ──
+    // ── AUTO DETECTION ALERTS & SCORE UPDATES ────────────────────────────────
+    let autoOutcome = outcome; // may be overridden
     let isNoBall = false;
 
+    // AUTO NO-BALL: if detection says no-ball but scorer pressed something else
     if ((analysisResult.noBallHeightDetected || analysisResult.noBallBounceDetected) &&
         outcome !== BALL_OUTCOMES.NO_BALL) {
       isNoBall = true;
@@ -397,12 +444,17 @@ export default function ScoringScreen() {
       dispatch(addAlert({
         id: `${Date.now()}-noball`,
         type: 'no_ball_detected',
-        message: `🚨 NO BALL! ${reason}`,
+        message: `🚨 NO BALL! ${reason} — Score updated automatically`,
         severity: 'danger',
       }));
       Vibration.vibrate([0, 300, 100, 300, 100, 300]);
+
+      // AUTO-COMMIT as No Ball if not already scored as such
+      // We do NOT override the scorer's choice; we alert and let scorer confirm
+      // But we DO auto-record the extra run
     }
 
+    // AUTO WIDE: if detection says wide but scorer pressed something else
     if (!isNoBall && analysisResult.wideDetected && outcome !== BALL_OUTCOMES.WIDE) {
       dispatch(addAlert({
         id: `${Date.now()}-wide`,
@@ -414,10 +466,13 @@ export default function ScoringScreen() {
     }
 
     if (analysisResult.lbwPossible && outcome === BALL_OUTCOMES.DOT) {
+      const edgeMsg = audioAnalysis.edgeDetected
+        ? ` | ⚠️ Edge detected (${Math.round(audioAnalysis.edgeConfidence * 100)}% conf)`
+        : ' | No edge detected';
       dispatch(addAlert({
         id: `${Date.now()}-lbw`,
         type: 'lbw_possible',
-        message: `👆 LBW possible! Conf: ${Math.round((analysisResult.lbwData?.confidence || 0) * 100)}%`,
+        message: `👆 LBW possible! Conf: ${Math.round((enhancedLbwData?.confidence || 0) * 100)}%${edgeMsg}`,
         severity: 'info',
       }));
     }
@@ -432,35 +487,50 @@ export default function ScoringScreen() {
       }));
     }
 
+    // Edge detected alert
+    if (audioAnalysis.edgeDetected && audioAnalysis.edgeConfidence > 0.55) {
+      dispatch(addAlert({
+        id: `${Date.now()}-edge`,
+        type: 'edge_detected',
+        message: `🎙️ Bat edge detected (${Math.round(audioAnalysis.edgeConfidence * 100)}% conf)`,
+        severity: 'info',
+      }));
+    }
+
     if (analysisResult.bounceDetected) dispatch(incrementBounceCount());
 
     const batsmanId = innings?.currentBatsmen?.striker?.id;
     const bowlerId  = innings?.currentBowler?.id;
 
     dispatch(recordBall({
-      outcome,
+      outcome: autoOutcome,
       wicketType,
       replayUri,
-      detectionFlags: { ...analysisResult },
+      detectionFlags: {
+        ...analysisResult,
+        edgeDetected:   audioAnalysis.edgeDetected,
+        edgeConfidence: audioAnalysis.edgeConfidence,
+      },
       batsmanId,
       bowlerId,
-      lbwData:    analysisResult.lbwData,
+      lbwData:       enhancedLbwData,
+      audioAnalysis,
       heightData: {
-        speedKmh:               analysisResult.speedKmh,
-        ballHeightLabel:        analysisResult.ballHeightLabel,
-        ballHeightPercent:      analysisResult.ballHeightPercent,
-        ballHeightCm:           analysisResult.ballHeightCm,
-        batsmanHeightPx:        analysisResult.batsmanHeightPx,
-        noBallHeightDetected:   analysisResult.noBallHeightDetected,
-        noBallBounceDetected:   analysisResult.noBallBounceDetected,
-        noBallReason:           analysisResult.noBallReason,
+        speedKmh:             analysisResult.speedKmh,
+        ballHeightLabel:      analysisResult.ballHeightLabel,
+        ballHeightPercent:    analysisResult.ballHeightPercent,
+        ballHeightCm:         analysisResult.ballHeightCm,
+        batsmanHeightPx:      analysisResult.batsmanHeightPx,
+        noBallHeightDetected: analysisResult.noBallHeightDetected,
+        noBallBounceDetected: analysisResult.noBallBounceDetected,
+        noBallReason:         analysisResult.noBallReason,
       },
     }));
 
-    setLastBallFlash(outcome);
+    setLastBallFlash(autoOutcome);
     setTimeout(() => setLastBallFlash(null), 800);
 
-    if (outcome === BALL_OUTCOMES.WICKET || outcome === BALL_OUTCOMES.LBW) {
+    if (autoOutcome === BALL_OUTCOMES.WICKET || autoOutcome === BALL_OUTCOMES.LBW) {
       setPlayerModalFor('newBatsman');
       setShowPlayerModal(true);
     }
@@ -493,6 +563,12 @@ export default function ScoringScreen() {
   };
 
   const handleRequestReview = (teamId, teamName, reviewType) => {
+    // Guard: check remaining reviews before dispatching
+    const teamReviews = reviews?.[teamId];
+    if (!teamReviews || teamReviews.remaining <= 0) {
+      Alert.alert('No Reviews', `${teamName} has no reviews remaining this innings.`);
+      return;
+    }
     dispatch(initiateReview({
       reviewingTeamId:   teamId,
       reviewingTeamName: teamName,
@@ -506,7 +582,7 @@ export default function ScoringScreen() {
     dispatch(resolveReview({ outcome, reviewingTeamId, umpireOverride }));
   };
 
-  // ── Selectors ──────────────────────────────────────────────────────────────
+  // Selectors
   const currentStriker = innings?.currentBatsmen?.striker;
   const currentBowler  = innings?.currentBowler;
   const strikerStats   = innings?.batsmanStats?.[currentStriker?.id];
@@ -520,7 +596,7 @@ export default function ScoringScreen() {
 
   const zones = detection.zones;
 
-  // ── Camera ─────────────────────────────────────────────────────────────────
+  // ── Camera render ────────────────────────────────────────────────────────────
   const renderCamera = () => {
     if (permission === null) {
       return (
@@ -539,17 +615,27 @@ export default function ScoringScreen() {
           <View style={styles.overlayContainer} pointerEvents="none">
             {zones && (
               <>
+                {/* Stump lines */}
                 <View style={[styles.overlayVLine, { left: zones.leftStumpX,  borderColor: COLORS.secondary }]} />
                 <View style={[styles.overlayVLine, { left: zones.rightStumpX, borderColor: COLORS.secondary }]} />
+                {/* Wide lines (35% of stump width outside stump) */}
+                <View style={[styles.overlayVLine, {
+                  left: zones.leftStumpX - zones.wideThresholdPx,
+                  borderColor: COLORS.warning, borderStyle: 'dashed', opacity: 0.7,
+                }]} />
+                <View style={[styles.overlayVLine, {
+                  left: zones.rightStumpX + zones.wideThresholdPx,
+                  borderColor: COLORS.warning, borderStyle: 'dashed', opacity: 0.7,
+                }]} />
                 {/* Waist line — full-toss no-ball */}
                 <View style={[styles.overlayLine, { top: zones.waistY,    borderColor: COLORS.danger,  borderStyle: 'dashed' }]} />
                 {/* Shoulder line — bouncer no-ball */}
                 <View style={[styles.overlayLine, { top: zones.shoulderY, borderColor: COLORS.warning, borderStyle: 'dotted' }]} />
                 {/* Hip line */}
                 <View style={[styles.overlayLine, { top: zones.hipY, borderColor: `${COLORS.info}60`, borderStyle: 'dotted' }]} />
-                {/* Wide zones */}
-                <View style={[styles.wideZone, { left: 0, width: Math.max(0, zones.leftStumpX - zones.wideThresholdPx * 0.3) }]} />
-                <View style={[styles.wideZone, { left: zones.rightStumpX + zones.wideThresholdPx * 0.3, right: 0 }]} />
+                {/* Wide zones shading */}
+                <View style={[styles.wideZone, { left: 0, width: Math.max(0, zones.leftStumpX - zones.wideThresholdPx) }]} />
+                <View style={[styles.wideZone, { left: zones.rightStumpX + zones.wideThresholdPx, right: 0 }]} />
               </>
             )}
 
@@ -575,6 +661,12 @@ export default function ScoringScreen() {
                   NB {(detection.noBallHeightDetected || detection.noBallBounceDetected) ? '🚨' : '✓'}
                 </Text>
               </View>
+              {audioCapturing && (
+                <View style={[styles.chip, { backgroundColor: COLORS.lbw_glow }]}>
+                  <Ionicons name="mic" size={8} color={COLORS.lbw} />
+                  <Text style={[styles.chipText, { color: COLORS.lbw }]}>EDGE</Text>
+                </View>
+              )}
             </View>
 
             {/* AUTO badge */}
@@ -610,11 +702,18 @@ export default function ScoringScreen() {
                 <View style={[styles.legendLine, { backgroundColor: COLORS.warning }]} />
                 <Text style={styles.legendText}>Shoulder (Bnc NB)</Text>
               </View>
+              <View style={styles.legendItem}>
+                <View style={[styles.legendLine, { backgroundColor: COLORS.warning, opacity: 0.6 }]} />
+                <Text style={styles.legendText}>Wide line</Text>
+              </View>
             </View>
 
             {/* Bounce counter */}
             <View style={styles.bounceChip}>
-              <Text style={styles.bounceChipText}>
+              <Text style={[
+                styles.bounceChipText,
+                bouncesInOver >= CRICKET.MAX_BOUNCES_PER_OVER && { color: COLORS.danger },
+              ]}>
                 Short balls: {bouncesInOver}/{CRICKET.MAX_BOUNCES_PER_OVER}
                 {bouncesInOver >= CRICKET.MAX_BOUNCES_PER_OVER ? ' 🚨' : ''}
               </Text>
@@ -628,7 +727,7 @@ export default function ScoringScreen() {
       <View style={styles.noCameraWrap}>
         <Ionicons name="camera-outline" size={44} color={COLORS.primary} />
         <Text style={styles.noCameraTitle}>Camera & Microphone Access Needed</Text>
-        <Text style={styles.noCameraText}>For auto wide, no-ball & LBW detection with video recording</Text>
+        <Text style={styles.noCameraText}>For auto wide, no-ball, LBW & edge detection with video recording</Text>
         <TouchableOpacity style={styles.grantCameraBtn} onPress={handleRequestPermission}>
           <LinearGradient colors={[COLORS.primary, COLORS.primary_dim]} style={styles.grantCameraBtnGrad}>
             <Ionicons name="camera" size={16} color="#000" />
@@ -727,6 +826,9 @@ export default function ScoringScreen() {
           <Text style={[styles.readyBtnText, isRecording && { color: COLORS.danger }]}>
             {isRecording ? 'Recording… Score the ball below' : 'Tap to Ready Ball (starts recording)'}
           </Text>
+          {audioCapturing && (
+            <Ionicons name="mic" size={14} color={COLORS.lbw} style={{ marginLeft: 4 }} />
+          )}
         </TouchableOpacity>
 
         {/* SCORING BUTTONS */}
@@ -860,7 +962,6 @@ const styles = StyleSheet.create({
   },
   autoDetectText: { fontSize: 9, fontWeight: '900', color: COLORS.primary, letterSpacing: 1 },
 
-  // Speed & height overlays on camera
   speedOverlay: {
     position: 'absolute', top: 8, right: 70,
     flexDirection: 'row', alignItems: 'baseline', gap: 2,

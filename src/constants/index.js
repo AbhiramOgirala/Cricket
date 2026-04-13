@@ -1,4 +1,4 @@
-// ─── THEME COLORS ───────────────────────────────────────────────────────────
+// ─── THEME COLORS ────────────────────────────────────────────────────────────
 export const COLORS = {
   // Backgrounds
   bg_deep: '#070c1b',
@@ -68,18 +68,19 @@ export const COLORS = {
   out: '#ff1744',
 };
 
-// ─── CRICKET CONSTANTS (IPL 2024/2025 Rules) ─────────────────────────────────
+// ─── CRICKET CONSTANTS (IPL 2024/2025 Rules) ──────────────────────────────────
 export const CRICKET = {
   BALLS_PER_OVER: 6,
 
-  // IPL 2024: 2 short-pitched deliveries allowed per over (changed from 1)
+  // IPL 2024: 2 short-pitched deliveries allowed per over
   MAX_BOUNCES_PER_OVER: 2,
 
-  // Wide threshold: 35% of stump width outside stump line
+  // Wide threshold: 35% of stump width outside stump line (IPL standard)
   WIDE_THRESHOLD: 0.35,
 
-  // Height detection thresholds
-  NO_BALL_HEIGHT_RATIO: 0.85,   // Ball above 85% of batsman height = no-ball (shoulder)
+  // Height detection thresholds (proportion of batsman height from feet)
+  // Shoulder at 79% from feet (100% - 21% = 79%)
+  NO_BALL_HEIGHT_RATIO: 0.85,   // Ball above 85% of batsman height = bouncer no-ball
   BOUNCE_HEIGHT_RATIO: 0.65,    // Bounce above 65% = chest height
 
   // Detection confidence thresholds
@@ -89,15 +90,20 @@ export const CRICKET = {
   BOUNCE_CONFIDENCE: 0.55,
   LBW_CONFIDENCE: 0.55,
 
-  // IPL DRS rules
-  REVIEWS_PER_TEAM: 2,             // Each team gets 2 reviews per innings
-  REVIEW_RESTORE_ON_CORRECT: false, // IPL: review NOT restored on success
+  // ── IPL DRS rules (STRICT) ──
+  REVIEWS_PER_TEAM: 2,             // Each team gets EXACTLY 2 reviews per innings
+  REVIEW_RESTORE_ON_CORRECT: false, // IPL: review NOT restored on success (only Umpire's Call LBW)
+
+  // Audio edge detection thresholds
+  EDGE_SPIKE_DB: 12,        // dB above ambient to count as a transient
+  EDGE_MAX_DURATION_MS: 60, // edges are short transients (< 60ms)
+  GROUND_HIT_MS: 200,       // ground hit double-tap window
 
   // Average batsman height for display (cm)
   AVG_BATSMAN_HEIGHT_CM: 175,
 };
 
-// ─── BALL OUTCOMES ──────────────────────────────────────────────────────────
+// ─── BALL OUTCOMES ────────────────────────────────────────────────────────────
 export const BALL_OUTCOMES = {
   DOT:     'dot',
   ONE:     '1',
@@ -145,7 +151,7 @@ export const OUTCOME_RUNS = {
 
 export const EXTRA_BALL_OUTCOMES = [BALL_OUTCOMES.WIDE, BALL_OUTCOMES.NO_BALL];
 
-// ─── WICKET TYPES ────────────────────────────────────────────────────────────
+// ─── WICKET TYPES ─────────────────────────────────────────────────────────────
 export const WICKET_TYPES = {
   BOWLED:     'Bowled',
   CAUGHT:     'Caught',
@@ -156,9 +162,9 @@ export const WICKET_TYPES = {
   RETIRED:    'Retired',
 };
 
-// ─── REVIEW OUTCOMES ─────────────────────────────────────────────────────────
+// ─── REVIEW OUTCOMES ──────────────────────────────────────────────────────────
 export const REVIEW_OUTCOMES = {
-  UPHELD:       'upheld',        // Original decision stands
+  UPHELD:       'upheld',        // Original decision stands (umpire override)
   OVERTURNED:   'overturned',    // Decision overturned (review successful)
   UMPIRES_CALL: 'umpires_call',  // Marginal — original stands, review RETAINED (LBW only in IPL)
   FAILED:       'failed',        // Review failed, team loses review
@@ -169,10 +175,10 @@ export const REVIEWABLE_OUTCOMES = [
   BALL_OUTCOMES.WICKET,
   BALL_OUTCOMES.LBW,
   BALL_OUTCOMES.WIDE,
-  BALL_OUTCOMES.NO_BALL, // IPL 2024: height no-balls can be reviewed
+  BALL_OUTCOMES.NO_BALL,
 ];
 
-// ─── DETECTION ALERT TYPES ──────────────────────────────────────────────────
+// ─── DETECTION ALERT TYPES ────────────────────────────────────────────────────
 export const ALERT_TYPES = {
   WIDE_DETECTED:  'wide_detected',
   NO_BALL_HEIGHT: 'no_ball_height',
@@ -180,4 +186,5 @@ export const ALERT_TYPES = {
   BOUNCE_WARNING: 'bounce_warning',
   LBW_POSSIBLE:   'lbw_possible',
   SPEED_INFO:     'speed_info',
+  EDGE_DETECTED:  'edge_detected',
 };
